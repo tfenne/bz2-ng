@@ -29,8 +29,9 @@
  * Taken from libdeflate 1.26 (common_defs.h). Changes for bz2-ng: it does not
  * include libdeflate.h, get_unaligned_be64() and put_unaligned_be64() are
  * added, MSVC's prefetchr() casts its address to the const char * that
- * _mm_prefetch() takes, and BZNG_HAS_BUILTIN_STANDIN marks the __has_builtin
- * stand-in, which lib/sort_libsais.c withdraws for libsais.
+ * _mm_prefetch() takes, BZNG_HAS_BUILTIN_STANDIN marks the __has_builtin
+ * stand-in, which lib/sort_libsais.c withdraws for libsais, and the ARCH_*
+ * block notes that c/CMakeLists.txt repeats its conditions.
  */
 
 #ifndef COMMON_DEFS_H
@@ -66,7 +67,12 @@
 /*                             Target architecture                            */
 /* ========================================================================== */
 
-/* If possible, define a compiler-independent ARCH_* macro. */
+/*
+ * If possible, define a compiler-independent ARCH_* macro.  c/CMakeLists.txt
+ * asks the compiler the same x86-64 and AArch64 questions, to give the vector
+ * tiers their instruction sets where CMAKE_SYSTEM_PROCESSOR does not name the
+ * target, so its probes must change with these conditions.
+ */
 #undef ARCH_X86_64
 #undef ARCH_X86_32
 #undef ARCH_ARM64
