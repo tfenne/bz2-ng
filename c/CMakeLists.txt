@@ -88,13 +88,36 @@ else()
   set(BZ2NG_DEFAULT_LAYOUT BZNG_LAYOUT_WIDE)
 endif()
 
-# Architecture of the target, for the ISA-specific flags.
+# Architecture of the target, for the ISA-specific flags. The sources decide
+# from the compiler's own macros (lib/common_defs.h) whether to build a vector
+# tier, so the flags must follow the same answer. CMAKE_SYSTEM_PROCESSOR is
+# empty in a cross build whose toolchain does not set it and is not always
+# spelt as matched here; where it is not recognised the compiler is asked.
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64)$" AND CMAKE_SIZEOF_VOID_P EQUAL 8)
   set(BZ2NG_ARCH x86_64)
 elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64|ARM64)$")
   set(BZ2NG_ARCH aarch64)
 else()
-  set(BZ2NG_ARCH other)
+  include(CheckCSourceCompiles)
+  check_c_source_compiles("
+    #if !defined(__x86_64__) && !(defined(_M_X64) && !defined(_M_ARM64EC))
+    #error not x86-64
+    #endif
+    int main(void) { return 0; }"
+    BZ2NG_COMPILER_TARGETS_X86_64)
+  check_c_source_compiles("
+    #if !defined(__aarch64__) && !defined(_M_ARM64)
+    #error not AArch64
+    #endif
+    int main(void) { return 0; }"
+    BZ2NG_COMPILER_TARGETS_AARCH64)
+  if(BZ2NG_COMPILER_TARGETS_X86_64 AND CMAKE_SIZEOF_VOID_P EQUAL 8)
+    set(BZ2NG_ARCH x86_64)
+  elseif(BZ2NG_COMPILER_TARGETS_AARCH64)
+    set(BZ2NG_ARCH aarch64)
+  else()
+    set(BZ2NG_ARCH other)
+  endif()
 endif()
 if(APPLE AND CMAKE_OSX_ARCHITECTURES)
   list(LENGTH CMAKE_OSX_ARCHITECTURES _n_arch)
