@@ -110,6 +110,16 @@ bzng_sais_free(void *ptr)
 #define malloc(size) BZNG_SAIS_MALLOC(size)
 #define free(ptr)    bzng_sais_free(ptr)
 
+/*
+ * libsais consults __has_builtin only where it is defined and otherwise knows
+ * gcc's builtins by version. The stand-in that common_defs.h defines for
+ * compilers without it (gcc before 10) answers 0 for __builtin_prefetch, and
+ * libsais stops with an error without a prefetch, so it is withdrawn here.
+ */
+#ifdef BZNG_HAS_BUILTIN_STANDIN
+#  undef __has_builtin
+#endif
+
 /* Most of libsais's functions are not used here. */
 #if defined(__GNUC__) || defined(__clang__)
 #  pragma GCC diagnostic push
@@ -123,6 +133,10 @@ bzng_sais_free(void *ptr)
 #  pragma GCC diagnostic pop
 #elif defined(_MSC_VER)
 #  pragma warning(pop)
+#endif
+
+#ifdef BZNG_HAS_BUILTIN_STANDIN
+#  define __has_builtin(builtin) 0
 #endif
 
 #undef malloc

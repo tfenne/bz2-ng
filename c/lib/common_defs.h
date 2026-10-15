@@ -28,8 +28,9 @@
 /*
  * Taken from libdeflate 1.26 (common_defs.h). Changes for bz2-ng: it does not
  * include libdeflate.h, get_unaligned_be64() and put_unaligned_be64() are
- * added, and MSVC's prefetchr() casts its address to the const char * that
- * _mm_prefetch() takes.
+ * added, MSVC's prefetchr() casts its address to the const char * that
+ * _mm_prefetch() takes, and BZNG_HAS_BUILTIN_STANDIN marks the __has_builtin
+ * stand-in, which lib/sort_libsais.c withdraws for libsais.
  */
 
 #ifndef COMMON_DEFS_H
@@ -187,6 +188,7 @@ typedef size_t machine_word_t;
  */
 #ifndef __has_builtin
 #  define __has_builtin(builtin)	0
+#  define BZNG_HAS_BUILTIN_STANDIN
 #endif
 
 /* inline - suggest that a function be inlined */
