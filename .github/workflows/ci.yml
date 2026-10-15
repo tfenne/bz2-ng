@@ -136,24 +136,28 @@ jobs:
           QEMU_LD_PREFIX: ${{ matrix.qemu_ld_prefix }}
         run: ctest --test-dir c/build -j "$(nproc)" --output-on-failure ${{ matrix.ctest_args }}
 
-  # The oldest supported toolchain, gcc 9 and CMake 3.16, in an Ubuntu 20.04
-  # container: gcc before 11 has no x86-64-v2 and -v3 level names, so the
-  # kernel tiers get their instruction sets one by one, and gcc before 10 has
-  # no __has_builtin.
+  # The oldest supported toolchains, gcc 9 and clang 10 with CMake 3.16, in
+  # an Ubuntu 20.04 container: compilers before gcc 11 and clang 12 have no
+  # x86-64-v2 and -v3 level names, so the kernel tiers get their instruction
+  # sets one by one, and gcc before 10 has no __has_builtin.
   oldest-toolchain:
     if: github.event_name != 'workflow_dispatch' || inputs.jobs == 'all' || inputs.jobs == 'portability'
-    name: x86-64 / gcc 9 / CMake 3.16
+    name: x86-64 / ${{ matrix.cc }} / CMake 3.16
     runs-on: ubuntu-24.04
     container: ubuntu:20.04
     timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        cc: [gcc-9, clang-10]
     steps:
       - name: Install
         run: |
           apt-get update
-          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends gcc-9 libc6-dev cmake make
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ${{ matrix.cc }} libc6-dev cmake make
       - uses: actions/checkout@v5
       - name: Configure
-        run: cmake -S c -B c/build -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=gcc-9
+        run: cmake -S c -B c/build -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=${{ matrix.cc }}
       - name: Build
         run: cmake --build c/build -j "$(nproc)"
       # CMake 3.16's ctest has no --test-dir.
@@ -161,23 +165,38 @@ jobs:
         working-directory: c/build
         run: ctest -j "$(nproc)" --output-on-failure --timeout 2400 -E mutate
 
-  # Windows x86-64: cross-compiled with mingw-w64, the tests under Wine. Wine
-  # is registered as the kernel's handler for Windows executables, so CTest,
-  # CMake's script tests and the shell tests run them unchanged. The Wine
-  # server is started before CTest: started by a test, its long-lived
-  # processes would hold that test's output pipe open until the end of the run.
-  # The heaviest decoder and capacity phases run on the AVX2 tier only.
+  # Windows x86-64 and i686: cross-compiled with mingw-w64, the tests under
+  # Wine (32-bit Wine for i686). Wine is registered as the kernel's handler for
+  # Windows executables, so CTest, CMake's script tests and the shell tests run
+  # them unchanged. The Wine server is started before CTest: started by a
+  # test, its long-lived processes would hold that test's output pipe open
+  # until the end of the run. On x86-64 the heaviest decoder and capacity
+  # phases run on the AVX2 tier only; i686 has the portable tier alone.
   windows:
     if: github.event_name != 'workflow_dispatch' || inputs.jobs == 'all' || inputs.jobs == 'windows'
-    name: Windows x86-64 (mingw-w64, tests under Wine) / gcc
+    name: Windows ${{ matrix.arch }} (mingw-w64, tests under Wine) / gcc
     runs-on: ubuntu-24.04
     timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86-64
+            triple: x86_64
+            packages: gcc-mingw-w64-x86-64 wine64 wine
+            ctest_exclude: "mutate|(valid|crafted|capacity)_(scalar|sse4)"
+          - arch: i686
+            triple: i686
+            foreign_arch: i386
+            packages: gcc-mingw-w64-i686 wine64 wine wine32:i386
+            ctest_exclude: "mutate"
     steps:
       - uses: actions/checkout@v5
       - name: Install
         run: |
+          if [ -n "${{ matrix.foreign_arch }}" ]; then sudo dpkg --add-architecture ${{ matrix.foreign_arch }}; fi
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends gcc-mingw-w64-x86-64 wine64 wine
+          sudo apt-get install -y --no-install-recommends ${{ matrix.packages }}
       # Ubuntu's wine-binfmt package registers nothing on 24.04.
       - name: Register Wine for Windows executables
         run: |
@@ -186,8 +205,8 @@ jobs:
       - name: Configure
         run: >-
           cmake -S c -B c/build -DCMAKE_BUILD_TYPE=Release
-          -DCMAKE_SYSTEM_NAME=Windows -DCMAKE_SYSTEM_PROCESSOR=x86_64
-          -DCMAKE_C_COMPILER=x86_64-w64-mingw32-gcc
+          -DCMAKE_SYSTEM_NAME=Windows -DCMAKE_SYSTEM_PROCESSOR=${{ matrix.triple }}
+          -DCMAKE_C_COMPILER=${{ matrix.triple }}-w64-mingw32-gcc
       - name: Build
         run: cmake --build c/build -j "$(nproc)"
       - name: Test
@@ -199,27 +218,23 @@ jobs:
           mkdir -p "$WINEPREFIX"
           wineserver -p < /dev/null > /dev/null 2>&1
           wineboot -u < /dev/null > /dev/null 2>&1
-          ctest --test-dir c/build -j "$(nproc)" --output-on-failure --timeout 2400 -E 'mutate|(valid|crafted|capacity)_(scalar|sse4)'
+          ctest --test-dir c/build -j "$(nproc)" --output-on-failure --timeout 2400 -E '${{ matrix.ctest_exclude }}'
       # The installed files and the DLL name the programs load, in the log.
       - name: Install layout
         run: ctest --test-dir c/build -V -R '^install_layout$'
 
-  # Windows i686, cross-compiled with mingw-w64 and not run. The functions are
-  # stdcall there, and programs built with bzlib.h link against the import
-  # library by their decorated names, which ld from binutils 2.40 leaves out
-  # of it and 2.42 puts in; the build is checked with both. Linking bzip2 and
-  # a program that calls every function is the test, with the DLL's exports
-  # and that program's imports.
-  windows-i686:
+  # Windows i686 with binutils 2.40 (Debian 12), cross-compiled and not run.
+  # The functions are stdcall there, and programs built with bzlib.h link
+  # against the import library by their decorated names, which ld from 2.40
+  # leaves out of it (the windows job's Ubuntu 24.04 has 2.42, whose ld puts
+  # them in). Linking bzip2 and a program that calls every function is the
+  # test, with the DLL's exports and that program's imports.
+  windows-i686-binutils-2-40:
     if: github.event_name != 'workflow_dispatch' || inputs.jobs == 'all' || inputs.jobs == 'windows'
-    name: Windows i686 (mingw-w64, build only) / ${{ matrix.image }}
+    name: Windows i686 (mingw-w64, binutils 2.40, build only) / gcc
     runs-on: ubuntu-24.04
-    container: ${{ matrix.image }}
+    container: debian:12
     timeout-minutes: 30
-    strategy:
-      fail-fast: false
-      matrix:
-        image: ["debian:12", "ubuntu:24.04"]
     steps:
       - name: Install
         run: |

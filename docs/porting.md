@@ -14,7 +14,7 @@ Programs linked against libbz2 need no relinking: the SONAME is the same, the sy
 
 ## Building
 
-CMake 3.16+ and a C11 compiler (gcc 9+, clang 18+, Apple clang, MSVC). `cmake -S c -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build && ctest --test-dir build && cmake --install build`. The options are in the README; the ones a package is likely to set are `BZ2NG_SONAME` and, for a build that must stay inside libbz2's documented decompression memory, `BZ2NG_DECODER_IN_FORMULA=ON` (see below).
+CMake 3.16+ and a C11 compiler (gcc 9+, clang 10+, Apple clang, MSVC). `cmake -S c -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build && ctest --test-dir build && cmake --install build`. The options are in the README; the ones a package is likely to set are `BZ2NG_SONAME` and, for a build that must stay inside libbz2's documented decompression memory, `BZ2NG_DECODER_IN_FORMULA=ON` (see below).
 
 If you compile the sources with your own build system rather than CMake, `c/CMakeLists.txt` is the reference. In particular:
 

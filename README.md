@@ -34,7 +34,7 @@ It has been validated as a rebuild-free drop-in on Ubuntu 24.04: installed over 
 
 ## Building and testing
 
-Requirements: CMake 3.16 or later and a C11 compiler — gcc 9 or later, clang 18 or later, Apple clang, or MSVC (Visual Studio 2022 or later; tested with 2026). No other dependencies.
+Requirements: CMake 3.16 or later and a C11 compiler — gcc 9 or later, clang 10 or later, Apple clang, or MSVC (Visual Studio 2022 or later; tested with 2026). No other dependencies.
 
 ```sh
 cmake -S c -B c/build -DCMAKE_BUILD_TYPE=Release
