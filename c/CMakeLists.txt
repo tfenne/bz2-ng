@@ -280,6 +280,35 @@ if(BZ2NG_BUILD_SHARED AND NOT BZ2NG_NO_STDIO)
   if(MINGW)
     target_link_options(bz2_shared PRIVATE -static-libgcc "LINKER:--enable-stdcall-fixup")
   endif()
+  # A program built with bzlib.h on 32-bit x86 calls the stdcall names
+  # (BZ2_bzRead@16), which the import library must hold.  ld from binutils
+  # 2.40 writes the .def file's undecorated names into it instead (2.42 writes
+  # the decorated ones), so dlltool rewrites it from the decorated names, each
+  # importing the DLL's undecorated export (-k).  The decorations are the
+  # functions' argument bytes in bzlib.h; the abi_dll_imports test links a
+  # program that calls all of them.
+  if(MINGW AND CMAKE_SIZEOF_VOID_P EQUAL 4)
+    set(_stdcall_names
+      BZ2_bzCompressInit@16 BZ2_bzCompress@8 BZ2_bzCompressEnd@4
+      BZ2_bzDecompressInit@12 BZ2_bzDecompress@4 BZ2_bzDecompressEnd@4
+      BZ2_bzBuffToBuffCompress@28 BZ2_bzBuffToBuffDecompress@24 BZ2_bzlibVersion@0
+      BZ2_bzReadOpen@24 BZ2_bzReadClose@8 BZ2_bzReadGetUnused@16 BZ2_bzRead@16
+      BZ2_bzWriteOpen@20 BZ2_bzWrite@16 BZ2_bzWriteClose@20 BZ2_bzWriteClose64@28
+      BZ2_bzopen@8 BZ2_bzdopen@8 BZ2_bzread@12 BZ2_bzwrite@12 BZ2_bzflush@4 BZ2_bzclose@4 BZ2_bzerror@8)
+    list(TRANSFORM _stdcall_names REPLACE "@[0-9]+$" "" OUTPUT_VARIABLE _undecorated)
+    if(NOT _undecorated STREQUAL BZ2NG_EXPORTED)
+      message(FATAL_ERROR "the stdcall names for the import library do not match BZ2NG_EXPORTED")
+    endif()
+    if(NOT CMAKE_DLLTOOL)
+      message(FATAL_ERROR "32-bit mingw-w64 needs dlltool for the import library; set CMAKE_DLLTOOL")
+    endif()
+    list(JOIN _stdcall_names "\n  " _list)
+    file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/bz2-stdcall.def "EXPORTS\n  ${_list}\n")
+    add_custom_command(TARGET bz2_shared POST_BUILD
+                       COMMAND ${CMAKE_DLLTOOL} -m i386 -k -d ${CMAKE_CURRENT_BINARY_DIR}/bz2-stdcall.def
+                               -D $<TARGET_FILE_NAME:bz2_shared> -l $<TARGET_LINKER_FILE:bz2_shared>
+                       VERBATIM)
+  endif()
 endif()
 
 # ---- library names ------------------------------------------------------------------

@@ -171,6 +171,19 @@ if(TARGET bz2_shared)
                    ${_export_tool} -P ${CMAKE_CURRENT_SOURCE_DIR}/exported_symbols.cmake)
 endif()
 
+# A program built with bzlib.h links against the DLL's import library and
+# imports the functions by their undecorated names (on 32-bit x86, where they
+# are stdcall, that is the import library's work).
+if(TARGET bz2_shared AND MINGW)
+  add_executable(dll_imports dll_imports.c)
+  target_compile_options(dll_imports PRIVATE ${BZ2NG_WARNINGS})
+  target_link_libraries(dll_imports PRIVATE bz2_shared)
+  add_test(NAME abi_dll_imports
+           COMMAND ${CMAKE_COMMAND} -DPROGRAM=$<TARGET_FILE:dll_imports> -DDLL=$<TARGET_FILE_NAME:bz2_shared>
+                   "-DEXPECTED=${BZ2NG_EXPORTED}" -DOBJDUMP=${CMAKE_OBJDUMP}
+                   -P ${CMAKE_CURRENT_SOURCE_DIR}/dll_imports.cmake)
+endif()
+
 # `cmake --install` into a scratch prefix gives the files, links and library
 # names of the platform's bzip2 package (install_layout.txt).
 if(TARGET bz2_shared AND TARGET bzip2)

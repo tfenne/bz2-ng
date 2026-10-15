@@ -27,7 +27,7 @@ fi
     lib/x86/kern_impl.h lib/x86/kern_sse4.c lib/x86/kern_avx2.c lib/x86/crc32_impl.h \
     lib/x86/crc32_clmul.h lib/x86/crc32_pclmul.c lib/x86/crc32_vpclmul.c \
     test/enc_difftest.c test/dec_difftest.c test/memtest.c test/sort_test.c \
-    test/crc_test.c test/layout_test.c test/tier_identity.c test/cli_tool.c \
+    test/crc_test.c test/layout_test.c test/tier_identity.c test/cli_tool.c test/dll_imports.c \
     test/huff_limit_test.c test/dec_bigbuf.c test/sort_libsais_trap.c \
     test/no_stdio_test.c test/test_tier.h test/reference_api.h test/sort_oracle.h test/compat.h \
     fuzz/fuzz_common.h fuzz/fuzz_compress.c fuzz/fuzz_decompress.c fuzz/fuzz_sort.c \
