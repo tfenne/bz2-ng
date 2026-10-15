@@ -136,6 +136,31 @@ jobs:
           QEMU_LD_PREFIX: ${{ matrix.qemu_ld_prefix }}
         run: ctest --test-dir c/build -j "$(nproc)" --output-on-failure ${{ matrix.ctest_args }}
 
+  # The oldest supported toolchain, gcc 9 and CMake 3.16, in an Ubuntu 20.04
+  # container: gcc before 11 has no x86-64-v2 and -v3 level names, so the
+  # kernel tiers get their instruction sets one by one, and gcc before 10 has
+  # no __has_builtin.
+  oldest-toolchain:
+    if: github.event_name != 'workflow_dispatch' || inputs.jobs == 'all' || inputs.jobs == 'portability'
+    name: x86-64 / gcc 9 / CMake 3.16
+    runs-on: ubuntu-24.04
+    container: ubuntu:20.04
+    timeout-minutes: 60
+    steps:
+      - name: Install
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends gcc-9 libc6-dev cmake make
+      - uses: actions/checkout@v5
+      - name: Configure
+        run: cmake -S c -B c/build -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=gcc-9
+      - name: Build
+        run: cmake --build c/build -j "$(nproc)"
+      # CMake 3.16's ctest has no --test-dir.
+      - name: Test
+        working-directory: c/build
+        run: ctest -j "$(nproc)" --output-on-failure --timeout 2400 -E mutate
+
   # Windows x86-64: cross-compiled with mingw-w64, the tests under Wine. Wine
   # is registered as the kernel's handler for Windows executables, so CTest,
   # CMake's script tests and the shell tests run them unchanged. The Wine
@@ -178,6 +203,38 @@ jobs:
       # The installed files and the DLL name the programs load, in the log.
       - name: Install layout
         run: ctest --test-dir c/build -V -R '^install_layout$'
+
+  # Windows i686, cross-compiled with mingw-w64 and not run. The functions are
+  # stdcall there, and programs built with bzlib.h link against the import
+  # library by their decorated names, which ld from binutils 2.40 leaves out
+  # of it and 2.42 puts in; the build is checked with both. Linking bzip2 and
+  # a program that calls every function is the test, with the DLL's exports
+  # and that program's imports.
+  windows-i686:
+    if: github.event_name != 'workflow_dispatch' || inputs.jobs == 'all' || inputs.jobs == 'windows'
+    name: Windows i686 (mingw-w64, build only) / ${{ matrix.image }}
+    runs-on: ubuntu-24.04
+    container: ${{ matrix.image }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ["debian:12", "ubuntu:24.04"]
+    steps:
+      - name: Install
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends gcc-mingw-w64-i686 cmake make
+      - uses: actions/checkout@v5
+      - name: Configure
+        run: >-
+          cmake -S c -B c/build -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_SYSTEM_NAME=Windows -DCMAKE_SYSTEM_PROCESSOR=i686
+          -DCMAKE_C_COMPILER=i686-w64-mingw32-gcc
+      - name: Build
+        run: cmake --build c/build -j "$(nproc)"
+      - name: Exports and imports
+        run: ctest --test-dir c/build -V -R '^abi_(exported_symbols|dll_imports)$'
 
   # Windows x86-64 with MSVC: the runner image's Visual Studio (2026 on
   # windows-2025 today; CMake picks the newest it finds), Release, built with
