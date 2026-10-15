@@ -33,6 +33,7 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
   set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
 endif()
 
+include(CheckCCompilerFlag)
 include(GNUInstallDirs)
 
 set(CMAKE_C_STANDARD 11)
@@ -140,8 +141,17 @@ function(bzng_isa_flags)
     # __AVX2__ for the AVX2 tier and VEX-encodes all of a file's vector code.
     set_source_files_properties(lib/x86/kern_avx2.c lib/x86/crc32_vpclmul.c PROPERTIES COMPILE_OPTIONS "/arch:AVX2")
   elseif(BZ2NG_ARCH STREQUAL "x86_64")
-    set_source_files_properties(lib/x86/kern_sse4.c PROPERTIES COMPILE_OPTIONS "-march=x86-64-v2")
-    set_source_files_properties(lib/x86/kern_avx2.c PROPERTIES COMPILE_OPTIONS "-march=x86-64-v3")
+    # gcc before 11 and clang before 12 do not know the level names; for them
+    # the same instruction sets are named one by one.
+    set(_v2 -mcx16 -msahf -mpopcnt -msse3 -msse4.1 -msse4.2 -mssse3)
+    set(_v3 ${_v2} -mavx -mavx2 -mbmi -mbmi2 -mf16c -mfma -mlzcnt -mmovbe -mxsave)
+    check_c_compiler_flag(-march=x86-64-v3 BZ2NG_HAVE_MARCH_LEVELS)
+    if(BZ2NG_HAVE_MARCH_LEVELS)
+      set(_v2 -march=x86-64-v2)
+      set(_v3 -march=x86-64-v3)
+    endif()
+    set_source_files_properties(lib/x86/kern_sse4.c PROPERTIES COMPILE_OPTIONS "${_v2}")
+    set_source_files_properties(lib/x86/kern_avx2.c PROPERTIES COMPILE_OPTIONS "${_v3}")
     set_source_files_properties(lib/x86/crc32_pclmul.c PROPERTIES COMPILE_OPTIONS "-msse4.1;-mpclmul")
     set_source_files_properties(lib/x86/crc32_vpclmul.c PROPERTIES COMPILE_OPTIONS "-mavx2;-mpclmul;-mvpclmulqdq")
   elseif(BZ2NG_ARCH STREQUAL "aarch64")
