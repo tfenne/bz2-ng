@@ -14,6 +14,17 @@
 cmake_minimum_required(VERSION 3.16)
 project(bz2ng VERSION 0.1.0 LANGUAGES C)
 
+# A compiler that CMake cannot identify gets none of the compiler-specific
+# settings below (no optimisation, warnings or symbol visibility) and CMake's
+# generic platform rules, which on Windows mean MSVC's library names and no
+# import library for the DLL.  Such a build half works, so it is refused.
+if(NOT CMAKE_C_COMPILER_ID)
+  message(FATAL_ERROR
+          "CMake could not identify the C compiler ${CMAKE_C_COMPILER}. Set CMAKE_C_COMPILER to gcc, clang "
+          "or cl, in a new build directory: CMake tries cc before gcc, and a cc such as MSYS's can be one it "
+          "cannot identify.")
+endif()
+
 option(BZ2NG_BUILD_SHARED "Build the shared library" ON)
 set(BZ2NG_SONAME "1.0" CACHE STRING "ELF shared-library SONAME version: 1.0 (upstream, Debian, Ubuntu) or 1 (Fedora, openSUSE)")
 set_property(CACHE BZ2NG_SONAME PROPERTY STRINGS "1.0" "1")
