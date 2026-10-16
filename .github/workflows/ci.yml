@@ -165,6 +165,27 @@ jobs:
         working-directory: c/build
         run: ctest -j "$(nproc)" --output-on-failure --timeout 2400 -E mutate
 
+  # musl, the C library of Alpine, in an Alpine container: no other job builds
+  # against it, and a glibc-only function or header shows up here and nowhere
+  # else. Alpine's gcc and CMake are its own, newer than the ones above, and
+  # its sh is BusyBox's, which the shell tests run under.
+  musl:
+    if: github.event_name != 'workflow_dispatch' || inputs.jobs == 'all' || inputs.jobs == 'portability'
+    name: x86-64 / musl (Alpine 3.23) / gcc
+    runs-on: ubuntu-24.04
+    container: alpine:3.23
+    timeout-minutes: 60
+    steps:
+      - name: Install
+        run: apk add --no-cache build-base cmake linux-headers binutils git
+      - uses: actions/checkout@v5
+      - name: Configure
+        run: cmake -S c -B c/build -DCMAKE_BUILD_TYPE=Release
+      - name: Build
+        run: cmake --build c/build -j "$(nproc)"
+      - name: Test
+        run: ctest --test-dir c/build -j "$(nproc)" --output-on-failure --timeout 2400 -E mutate
+
   # Windows x86-64 and i686: cross-compiled with mingw-w64, the tests under
   # Wine (32-bit Wine for i686). Wine is registered as the kernel's handler for
   # Windows executables, so CTest, CMake's script tests and the shell tests run
