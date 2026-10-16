@@ -1,0 +1,86 @@
+Keeps the LMS positions of libsais_main_8u's first pass over T for after
+the recursion, where the free space allows, instead of finding them again.
+
+After the recursion has sorted the reduced string, libsais_main_8u maps
+its suffix array back to positions in T through the list of LMS
+positions, which it rebuilds with a second classification pass over T
+(libsais_gather_lms_suffixes_8u). Here the list from the first pass is
+copied into the last m ints of the free space, and the top level and the
+recursion work in the fs - m ints below it. That is done only where
+fs >= m, which puts the copy beyond SA[0..n), and fs + n >= 4m, which
+leaves the recursion fs + n - 3m >= m ints of free space, at least its
+length: a level's free space less its length never decreases down the
+recursion and a level's alphabet is smaller than its length, so the
+recursion still never allocates. Elsewhere the positions are found again
+as before. The suffix array is the same either way.
+
+Only libsais_main_8u changes, and every entry that reaches it (libsais,
+libsais_gsa, libsais_bwt, libsais_bwt_aux and their _ctx forms) takes the
+same path. The recursion's levels still find their own positions again:
+in most of its bucket layouts that pass also recounts the buckets, which
+the deeper levels overwrite, so keeping the positions there saves less.
+
+At level 9 the condition holds for every block of a 16 KiB stream and for
+the 900 kB blocks of inputs with at most 3/8 LMS positions (XA:Z, quality
+strings, ten of the twelve Silesia files), not for those of MC:Z (0.40).
+
+Measured on the M4 with Apple clang 21, bz2-ng's encoder at level 9, 5
+rounds interleaved with an identical-binary control, each speed taken
+relative to stock libbz2's in the same process, against the same build
+without this patch (both builds also carrying an unconditional read
+prefetch in two partial-sorting and two final-sorting scans of the
+recursion, a change that measured even there and is not in this series):
+XA:Z whole 1.061, quality strings whole 1.057, Silesia 1.035, and in
+16 KiB streams XA:Z 1.057 and MC:Z 1.041, faster in every round; quality
+strings in 16 KiB streams 1.019, inside the noise of the raw speeds, and
+MC:Z whole 0.987, inside the noise.
+
+--- a/libsais.c
++++ b/libsais.c
+@@ -1,3 +1,10 @@
++/*
++ * Altered for bz2-ng: this is libsais.c of libsais commit 1a696e6 with the
++ * following patches from bz2-ng's c/third_party/libsais/patches applied.
++ *
++ * 0001-keep-lms-positions.patch
++ */
++
+ /*--
+ 
+ This file is a part of libsais, a library for linear time suffix array,
+@@ -6896,6 +6903,17 @@
+         sa_sint_t first_lms_suffix    = SA[n - m];
+         sa_sint_t left_suffixes_count = libsais_initialize_buckets_for_lms_suffixes_radix_sort_8u(T, buckets, first_lms_suffix);
+ 
++        /*
++         * Where the rest of the free space still lets the recursion sort
++         * without allocating, the LMS positions are kept in its last m ints
++         * for after the recursion instead of being found again by a second
++         * pass over T: fs >= m puts the copy beyond SA[0..n), and
++         * fs + n >= 4m leaves the recursion fs + n - 3m >= m ints of free
++         * space, at least its length.
++         */
++        sa_sint_t keep_lms_suffixes = fs >= m && (fs + n) / 4 >= m;
++        if (keep_lms_suffixes) { fs -= m; memcpy(&SA[n + fs], &SA[n - m], (size_t)m * sizeof(sa_sint_t)); }
++
+         if (threads > 1 && n >= 65536) { memset(SA, 0, ((size_t)n - (size_t)m) * sizeof(sa_sint_t)); }
+         libsais_radix_sort_lms_suffixes_8u_omp(T, SA, n, m, flags, buckets, threads, thread_state);
+         if (threads > 1 && n >= 65536) { memset(&SA[(fast_sint_t)n - (fast_sint_t)m], 0, (size_t)m * sizeof(sa_sint_t)); }
+@@ -6911,8 +6929,15 @@
+                 return -2;
+             }
+ 
+-            libsais_gather_lms_suffixes_8u_omp(T, SA, n, threads, thread_state);
+-            libsais_reconstruct_lms_suffixes_omp(SA, n, m, threads);
++            if (keep_lms_suffixes)
++            {
++                libsais_reconstruct_lms_suffixes_omp(SA, n + fs + m, m, threads);
++            }
++            else
++            {
++                libsais_gather_lms_suffixes_8u_omp(T, SA, n, threads, thread_state);
++                libsais_reconstruct_lms_suffixes_omp(SA, n, m, threads);
++            }
+         }
+ 
+         libsais_place_lms_suffixes_interval_8u(SA, n, m, flags, buckets);

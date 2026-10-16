@@ -8,9 +8,10 @@
 # instruction-set flags, and only on their own architecture (bzng_isa_flags
 # below); the run-time dispatch (lib/kern.h, lib/crc32.c) calls them only on
 # CPUs that have the instructions. Nothing is generated at configure time
-# except bzip2.pc, the shared library's list of exported symbols and the
-# symbolic links that the install adds (and, for the tests, the randomising
-# compressor of test/CMakeLists.txt).
+# except the patched copy of libsais that lib/sort_libsais.c compiles,
+# bzip2.pc, the shared library's list of exported symbols and the symbolic
+# links that the install adds (and, for the tests, the randomising compressor
+# of test/CMakeLists.txt).
 cmake_minimum_required(VERSION 3.16)
 project(bz2ng VERSION 0.1.0 LANGUAGES C)
 
@@ -168,6 +169,89 @@ set(BZ2NG_SOURCES
   lib/x86/kern_avx2.c    # ISA: x86-64-v3 tier
 )
 
+# ---- libsais, as compiled -----------------------------------------------------------
+# lib/sort_libsais.c compiles the vendored libsais with the patches in
+# third_party/libsais/patches applied in name order. They are applied here to
+# a copy in the build directory, and the result must match the SHA-256 sums
+# in patches/SHA256, so that a patch that applies with fuzz, in part or to a
+# different libsais never compiles.
+set(BZ2NG_LIBSAIS_VENDORED ${PROJECT_SOURCE_DIR}/third_party/libsais)
+set(BZ2NG_LIBSAIS_DIR ${PROJECT_BINARY_DIR}/libsais)
+file(GLOB BZ2NG_LIBSAIS_PATCHES CONFIGURE_DEPENDS ${BZ2NG_LIBSAIS_VENDORED}/patches/*.patch)
+list(SORT BZ2NG_LIBSAIS_PATCHES)
+# configure_file makes the vendored files configure dependencies as well.
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+             ${BZ2NG_LIBSAIS_VENDORED}/patches/SHA256 ${BZ2NG_LIBSAIS_PATCHES})
+function(bzng_patch_libsais)
+  set(_files libsais.c libsais.h)
+  set(_work ${PROJECT_BINARY_DIR}/libsais-patching)
+  file(REMOVE_RECURSE ${_work})
+  # By content: GNU patch refuses to patch a symbolic link.
+  foreach(_file IN LISTS _files)
+    configure_file(${BZ2NG_LIBSAIS_VENDORED}/${_file} ${_work}/${_file} COPYONLY)
+  endforeach()
+  if(BZ2NG_LIBSAIS_PATCHES)
+    # Git for Windows installs patch outside the PATH it sets.
+    find_program(BZ2NG_PATCH patch PATHS "C:/Program Files/Git/usr/bin")
+    find_program(BZ2NG_GIT git)
+    if(BZ2NG_PATCH)
+      set(_tool ${BZ2NG_PATCH})
+      set(_apply ${BZ2NG_PATCH} -p1 -N -i)
+    elseif(BZ2NG_GIT)
+      # The ceiling keeps git from taking the build directory to be inside a
+      # repository, whose configuration could change how a patch applies, and
+      # core.autocrlf=false overrides a user's or system's setting, which
+      # would otherwise write CRLF line endings.
+      set(_tool "${BZ2NG_GIT} apply")
+      set(_apply ${CMAKE_COMMAND} -E env GIT_CEILING_DIRECTORIES=${PROJECT_BINARY_DIR}
+                 ${BZ2NG_GIT} -c core.autocrlf=false apply -p1 --whitespace=nowarn)
+    else()
+      message(FATAL_ERROR
+              "patch was not found: the build applies third_party/libsais/patches with it (or with git, "
+              "also not found). Install patch, for example with apt-get install patch, and configure again.")
+    endif()
+  endif()
+  foreach(_patch IN LISTS BZ2NG_LIBSAIS_PATCHES)
+    execute_process(COMMAND ${_apply} ${_patch} WORKING_DIRECTORY ${_work}
+                    RESULT_VARIABLE _rc OUTPUT_VARIABLE _log ERROR_VARIABLE _log)
+    if(NOT _rc EQUAL 0)
+      message(FATAL_ERROR "${_patch} does not apply to libsais:\n${_log}")
+    endif()
+    get_filename_component(_name ${_patch} NAME)
+    message(STATUS "libsais: applied ${_name} with ${_tool}")
+  endforeach()
+  file(STRINGS ${BZ2NG_LIBSAIS_VENDORED}/patches/SHA256 _lines)
+  foreach(_line IN LISTS _lines)
+    if(NOT _line MATCHES "^([0-9a-f]+)  (.+)$")
+      message(FATAL_ERROR "third_party/libsais/patches/SHA256 has a line that is not a SHA-256 sum: ${_line}")
+    endif()
+    set(_sum_${CMAKE_MATCH_2} ${CMAKE_MATCH_1})
+  endforeach()
+  foreach(_file IN LISTS _files)
+    if(NOT DEFINED _sum_${_file})
+      message(FATAL_ERROR "third_party/libsais/patches/SHA256 has no sum for ${_file}")
+    endif()
+    file(SHA256 ${_work}/${_file} _have)
+    if(NOT _have STREQUAL _sum_${_file})
+      message(FATAL_ERROR
+              "libsais's ${_file} with third_party/libsais/patches applied has SHA-256 ${_have}, not the "
+              "${_sum_${_file}} that patches/SHA256 records: the vendored file, a patch or the record has "
+              "changed.")
+    endif()
+  endforeach()
+  # Unchanged files keep their time stamps, so that configuring again does not
+  # rebuild the sorter.
+  foreach(_file IN LISTS _files)
+    execute_process(COMMAND ${CMAKE_COMMAND} -E copy_if_different ${_work}/${_file} ${BZ2NG_LIBSAIS_DIR}/${_file}
+                    RESULT_VARIABLE _rc)
+    if(NOT _rc EQUAL 0)
+      message(FATAL_ERROR "could not write ${BZ2NG_LIBSAIS_DIR}/${_file}")
+    endif()
+  endforeach()
+  file(REMOVE_RECURSE ${_work})
+endfunction()
+bzng_patch_libsais()
+
 # Per-file ISA flags.
 function(bzng_isa_flags)
   if(BZ2NG_ARCH STREQUAL "x86_64" AND CMAKE_C_COMPILER_ID STREQUAL "MSVC")
@@ -267,6 +351,8 @@ set(BZ2NG_CORE_SOURCES ${BZ2NG_SOURCES})
 list(REMOVE_ITEM BZ2NG_CORE_SOURCES lib/decompress.c)
 add_library(bz2_core_objects OBJECT ${BZ2NG_CORE_SOURCES})
 bzng_library_settings(bz2_core_objects)
+# Where lib/sort_libsais.c finds libsais.c.
+target_include_directories(bz2_core_objects PRIVATE ${BZ2NG_LIBSAIS_DIR})
 add_library(bz2_dec_objects OBJECT lib/decompress.c)
 bzng_library_settings(bz2_dec_objects)
 target_compile_definitions(bz2_dec_objects PRIVATE BZNG_DEFAULT_LAYOUT=${BZ2NG_DEFAULT_LAYOUT})

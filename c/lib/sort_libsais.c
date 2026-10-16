@@ -7,22 +7,24 @@
  */
 
 /*
- * bzng_bwt (sort.h) on libsais. libsais is compiled into this translation
- * unit, unmodified, so that its public functions can be given internal
- * linkage (a static library then defines no libsais symbol to clash with an
- * application's own copy), its single-thread context can be built here with
- * its bucket counters in the caller's work array, and malloc and free can be
- * replaced for it alone.
+ * bzng_bwt (sort.h) on libsais. libsais, as the build patches it
+ * (third_party/libsais/patches), is compiled into this translation unit so
+ * that its public functions can be given internal linkage (a static library
+ * then defines no libsais symbol to clash with an application's own copy),
+ * its single-thread context can be built here with its bucket counters in the
+ * caller's work array, and malloc and free can be replaced for it alone.
  *
  * During a sort libsais allocates only in its recursion, a buffer of k ints
  * at a level whose alphabet k exceeds both 1000 and the level's free space.
  * Following the free space down the recursion shows that free space of at
  * least floor(n/2) - 2 at the top rules that out for every input of length n
  * (docs/spec.md section 4.3): each level's free space minus its
- * length never decreases, and its alphabet is smaller than its length. The
- * work array leaves at least floor(n/2). libsais's malloc returns NULL here,
- * so if that bound were ever wrong a sort would fail with an internal error
- * instead of allocating behind the caller's bzalloc.
+ * length never decreases, and its alphabet is smaller than its length. Patch
+ * 0001 keeps the LMS positions in that free space only where what it leaves
+ * the recursion satisfies the same argument. The work array leaves at least
+ * floor(n/2). libsais's malloc returns NULL here, so if that bound were ever
+ * wrong a sort would fail with an internal error instead of allocating
+ * behind the caller's bzalloc.
  */
 #include <limits.h>
 #include <stddef.h>
@@ -128,7 +130,8 @@ bzng_sais_free(void *ptr)
 #  pragma warning(push)
 #  pragma warning(disable : 4505) /* unreferenced static function */
 #endif
-#include "../third_party/libsais/libsais.c"
+/* The patched copy in the build directory, on this file's include path. */
+#include "libsais.c"
 #if defined(__GNUC__) || defined(__clang__)
 #  pragma GCC diagnostic pop
 #elif defined(_MSC_VER)

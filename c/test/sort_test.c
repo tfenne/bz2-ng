@@ -399,6 +399,94 @@ zigzag(void)
 	family_end("zigzag");
 }
 
+/* Blocks at the edge of the condition under which the sorter keeps the LMS
+ * positions of its first pass for after the recursion (patch 0001 of
+ * third_party/libsais/patches). With the free space bzng_bwt_work_ints(n)
+ * gives, floor(n/2), it keeps them while m <= (floor(n/2) + n) / 4, and at
+ * that m the first level of the recursion has free space equal to its
+ * length. Types run in periods of eight, SSLSSLSL (three LMS positions a
+ * period), with single periods made SLSLSLSL (one more) or SSLSSSSL (one
+ * fewer) to reach m = edge - 1, edge and edge + 1. Bytes are random over
+ * most of their range and chosen right to left with strict inequalities, so
+ * that the types hold exactly and most LMS substrings are distinct: the
+ * recursion's alphabet is large. T[0] is the block's only 0, so the block is
+ * its own least rotation and reaches the sorter unrotated. */
+static uint8_t edge_types[MAX_N]; /* 1 = S */
+
+/* LMS positions of T[0..n) (T[n - 1] is L). */
+static int32_t
+count_lms(const uint8_t *T, int32_t n)
+{
+	int32_t m = 0;
+	int next_s = 0;
+	for (int32_t i = n - 2; i >= 0; i--) {
+		int s = T[i] < T[i + 1] || (T[i] == T[i + 1] && next_s);
+		m += next_s && !s;
+		next_s = s;
+	}
+	return m;
+}
+
+static void
+edge_block(uint8_t *out, int32_t n, int32_t target)
+{
+	int32_t periods = n / 8, m = 0;
+	for (int32_t i = 0; i < n; i++)
+		edge_types[i] = (uint8_t)("SSLSSLSL"[i % 8] == 'S');
+	edge_types[n - 1] = 0;
+	for (int32_t i = 1; i < n; i++)
+		m += edge_types[i] && !edge_types[i - 1];
+	/* A whole period other than the first and the last, changed, moves m by
+	 * one; the changed periods are spread over the block. */
+	int32_t d = target - m, todo = d < 0 ? -d : d;
+	const char *swap = d > 0 ? "SLSLSLSL" : "SSLSSSSL";
+	int32_t stride = (periods - 2) / (todo + 1);
+	for (int32_t k = 1; k <= todo; k++) {
+		uint8_t *period = edge_types + 8 * k * stride;
+		for (int j = 0; j < 8; j++)
+			period[j] = (uint8_t)(swap[j] == 'S');
+	}
+	/* Each S below the next byte and each L above it, leaving room for the
+	 * run of S positions to its left, which takes values from 1 up. */
+	out[n - 1] = (uint8_t)(16 + rnd(200));
+	for (int32_t i = n - 2; i >= 1; i--) {
+		int run = 0, next = out[i + 1], lo, hi;
+		for (int32_t j = i - 1; j >= 1 && edge_types[j]; j--)
+			run++;
+		if (edge_types[i]) {
+			lo = run + 1;
+			hi = next - 1;
+		} else {
+			lo = next + 1 > run + 1 ? next + 1 : run + 1;
+			hi = 255;
+		}
+		out[i] = (uint8_t)(lo + (int)rnd((uint32_t)(hi - lo + 1)));
+	}
+	out[0] = 0;
+}
+
+static void
+lms_edge(void)
+{
+	family_begin();
+	int32_t lens[] = {1000, 4099, 65537, 300001, 900000};
+	for (size_t t = 0; t < sizeof lens / sizeof lens[0]; t++) {
+		int32_t n = lens[t], edge = (n / 2 + n) / 4;
+		if (quick && n > 100000)
+			continue;
+		for (int32_t target = edge - 1; target <= edge + 1; target++) {
+			edge_block(buf, n, target);
+			if (count_lms(buf, n) != target) {
+				report_failure("lms_edge", buf, n, -1,
+					       "LMS count missed");
+				continue;
+			}
+			check_block("lms_edge", buf, n);
+		}
+	}
+	family_end("lms_edge");
+}
+
 static void
 random_long(void)
 {
@@ -465,6 +553,7 @@ main(int argc, char **argv)
 	every_alphabet();
 	periodic();
 	zigzag();
+	lms_edge();
 	random_long();
 
 	printf("TEST\ttier=%s\tquick=%d\tcases=%ld\tfailures=%ld\n",

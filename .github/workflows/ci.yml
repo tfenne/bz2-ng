@@ -154,7 +154,7 @@ jobs:
       - name: Install
         run: |
           apt-get update
-          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ${{ matrix.cc }} libc6-dev cmake make
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ${{ matrix.cc }} libc6-dev cmake make patch
       - uses: actions/checkout@v5
       - name: Configure
         run: cmake -S c -B c/build -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=${{ matrix.cc }}
@@ -251,7 +251,7 @@ jobs:
       - name: Install
         run: |
           apt-get update
-          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends gcc-mingw-w64-i686 cmake make
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends gcc-mingw-w64-i686 cmake make patch
       - uses: actions/checkout@v5
       - name: Configure
         run: >-

@@ -122,6 +122,7 @@ bzng_tier_test(sort_oracle $<TARGET_FILE:sort_test>)
 # libsais symbol visible from the libraries, and no allocator called by the
 # sorter's object.
 bzng_test_program(sort_test_sais_trap sort_test.c sort_libsais_trap.c)
+target_include_directories(sort_test_sais_trap PRIVATE ${BZ2NG_LIBSAIS_DIR})
 add_test(NAME sort_oracle_sais_trap COMMAND sort_test_sais_trap)
 if(MSVC)
   set(_symbol_tool ${BZ2NG_SYMBOL_TOOL})
