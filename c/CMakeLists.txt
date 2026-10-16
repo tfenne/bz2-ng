@@ -320,7 +320,11 @@ if(BZ2NG_BUILD_SHARED AND NOT BZ2NG_NO_STDIO)
   # the decorated ones), so dlltool rewrites it from the decorated names, each
   # importing the DLL's undecorated export (-k).  The decorations are the
   # functions' argument bytes in bzlib.h; the abi_dll_imports test links a
-  # program that calls all of them.
+  # program that calls all of them.  dlltool names the archive's members after
+  # the path it is given for the library, so it runs in the library's directory
+  # with the bare file name: given the full path, every member name carries the
+  # build directory (libbz2.dll.a held C__Users_..._libbz2_dll_a_t.o), and the
+  # file differs from one build directory to the next.
   if(MINGW AND CMAKE_SIZEOF_VOID_P EQUAL 4)
     set(_stdcall_names
       BZ2_bzCompressInit@16 BZ2_bzCompress@8 BZ2_bzCompressEnd@4
@@ -340,7 +344,8 @@ if(BZ2NG_BUILD_SHARED AND NOT BZ2NG_NO_STDIO)
     file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/bz2-stdcall.def "EXPORTS\n  ${_list}\n")
     add_custom_command(TARGET bz2_shared POST_BUILD
                        COMMAND ${CMAKE_DLLTOOL} -m i386 -k -d ${CMAKE_CURRENT_BINARY_DIR}/bz2-stdcall.def
-                               -D $<TARGET_FILE_NAME:bz2_shared> -l $<TARGET_LINKER_FILE:bz2_shared>
+                               -D $<TARGET_FILE_NAME:bz2_shared> -l $<TARGET_LINKER_FILE_NAME:bz2_shared>
+                       WORKING_DIRECTORY $<TARGET_LINKER_FILE_DIR:bz2_shared>
                        VERBATIM)
   endif()
 endif()
