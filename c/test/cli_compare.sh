@@ -66,8 +66,15 @@ run() { # label, then bzip2 arguments; input from $IN
 	en=$?
 	# libbz2's sorter reports falling back to its second sorter at -vv;
 	# bz2-ng has no such sorter (a documented divergence).
-	sed -e "s|$S|bzip2|g" -e '/too repetitive; using fallback sorting algorithm/d' err.s > err.s2
-	sed "s|$N|bzip2|g" err.n > err.n2
+	# After "*Possible* reason follows." bzip2.c calls perror, which prints
+	# whatever errno an earlier call left, failed or not: a heap that cannot
+	# grow, as under QEMU's user mode, leaves ENOMEM in one library's run and
+	# not in the other's. That line says nothing about the library, so it is
+	# not compared; the message around it still is.
+	sed -e "s|$S|bzip2|g" -e '/too repetitive; using fallback sorting algorithm/d' \
+		-e '/[*]Possible[*] reason follows[.]$/{' -e n -e 's/.*/bzip2: (errno text)/' -e '}' err.s > err.s2
+	sed -e "s|$N|bzip2|g" \
+		-e '/[*]Possible[*] reason follows[.]$/{' -e n -e 's/.*/bzip2: (errno text)/' -e '}' err.n > err.n2
 	if [ $es -eq $en ] && cmp -s out.s out.n && cmp -s err.s2 err.n2; then
 		pass=$((pass + 1))
 	else
