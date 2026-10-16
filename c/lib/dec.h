@@ -73,7 +73,7 @@ typedef enum {
 } bzng_layout;
 
 /*
- * Chains walked in lockstep for blocks of at least 64 Ki rows, in both
+ * Chains walked in lockstep for blocks of at least 4 Ki rows, in both
  * layouts.  The walk's output pool keeps one chunk of slack per chain.
  */
 #define BZNG_LANES 24u

@@ -567,6 +567,8 @@ gen_inputs(void)
 		   0); /* one maximum-size block plus a little */
 	add_stream("text_950k", b, 950000, 1, 0); /* ten blocks */
 	add_stream("text_120k", b, 120000, 1, 1);
+	/* a block of 1-4 Ki rows: the walk's 8-lane tier */
+	add_stream("text_3k", b, 3000, 9, 0);
 	/* exactly periodic blocks: several periods, and u^k filling one block
 	 */
 	static const size_t periods[] = {1, 2, 3, 7, 251, 1000, 4096, 65537};
