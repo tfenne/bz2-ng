@@ -2,13 +2,17 @@
 # ;-list) from the DLL named DLL, undecorated, as libbz2's own DLL exports
 # them.  Read with OBJDUMP, GNU objdump for the target.
 # usage: cmake -DPROGRAM=... -DDLL=... -DEXPECTED=... -DOBJDUMP=... -P dll_imports.cmake
+# objdump translates its headings ("DLL Name:") into the user's language.
+set(ENV{LC_ALL} C)
 execute_process(COMMAND ${OBJDUMP} -p ${PROGRAM} OUTPUT_VARIABLE _out RESULT_VARIABLE _rc)
 if(NOT _rc EQUAL 0)
   message(FATAL_ERROR "listing the imports of ${PROGRAM} failed")
 endif()
 string(REPLACE "\r" "" _out "${_out}")
 string(REPLACE "\n" ";" _lines "${_out}")
-# Each DLL's imports follow its "DLL Name:" line, one "vma hint name" each.
+# Each DLL's imports follow its "DLL Name:" line, one "vma hint name" each;
+# binutils 2.44 and later put an ordinal ("<none>" for an import by name)
+# between the vma and the hint, and print the hint in hexadecimal.
 set(_got "")
 set(_in_dll 0)
 foreach(_line IN LISTS _lines)
@@ -20,8 +24,8 @@ foreach(_line IN LISTS _lines)
     else()
       set(_in_dll 0)
     endif()
-  elseif(_in_dll AND _line MATCHES "^[ \t]*[0-9a-fA-F]+[ \t]+[0-9]+[ \t]+([A-Za-z0-9_@]+)$")
-    list(APPEND _got ${CMAKE_MATCH_1})
+  elseif(_in_dll AND _line MATCHES "^[ \t]*[0-9a-fA-F]+([ \t]+(<none>|[0-9]+))?[ \t]+[0-9a-fA-F]+[ \t]+([A-Za-z0-9_@]+)$")
+    list(APPEND _got ${CMAKE_MATCH_3})
   endif()
 endforeach()
 list(SORT _got)

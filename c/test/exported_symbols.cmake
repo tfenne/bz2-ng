@@ -30,13 +30,16 @@ foreach(_line IN LISTS _lines)
       list(APPEND _got ${CMAKE_MATCH_1})
     endif()
   elseif(LIB MATCHES "[.]dll$")
-    # The names follow "[Ordinal/Name Pointer] Table", one "[ n] name" each.
-    # They are kept whole: a 32-bit stdcall name decorated with "@n" is not
-    # the name libbz2's own DLL exports.
+    # The names follow "[Ordinal/Name Pointer] Table", one "[ n] name" each;
+    # binutils 2.44 and later add "+base[ m]  hint" before the name and a line
+    # of column names after the heading.  The names are kept whole: a 32-bit
+    # stdcall name decorated with "@n" is not the name libbz2's own DLL exports.
     if(_line MATCHES "^\\[Ordinal/Name Pointer\\] Table")
       set(_in_export_names 1)
-    elseif(_in_export_names AND _line MATCHES "^[ \t]*\\[ *[0-9]+\\] ([A-Za-z0-9_@]+)$")
-      list(APPEND _got ${CMAKE_MATCH_1})
+    elseif(_in_export_names AND _line MATCHES "^[ \t]*Ordinal[ \t]+Hint[ \t]+Name$")
+      # the columns' names
+    elseif(_in_export_names AND _line MATCHES "^[ \t]*\\[ *[0-9]+\\]( \\+base\\[ *[0-9]+\\] +[0-9A-Fa-f]+)? ([A-Za-z0-9_@]+)$")
+      list(APPEND _got ${CMAKE_MATCH_2})
     elseif(_in_export_names)
       set(_in_export_names 0)
     endif()
