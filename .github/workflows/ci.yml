@@ -226,18 +226,27 @@ jobs:
       - name: Install layout
         run: ctest --test-dir c/build -V -R '^install_layout$'
 
-  # Windows i686 with binutils 2.40 (Debian 12), cross-compiled and not run.
-  # The functions are stdcall there, and programs built with bzlib.h link
-  # against the import library by their decorated names, which ld from 2.40
-  # leaves out of it (the windows job's Ubuntu 24.04 has 2.42, whose ld puts
-  # them in). Linking bzip2 and a program that calls every function is the
-  # test, with the DLL's exports and that program's imports.
-  windows-i686-binutils-2-40:
+  # Windows i686 with the binutils of Debian 12 (2.40) and 13 (2.44),
+  # cross-compiled and not run; the windows job's Ubuntu 24.04 has 2.42. The
+  # functions are stdcall there, and programs built with bzlib.h link against
+  # the import library by their decorated names, which ld from 2.40 leaves out
+  # of it. Linking bzip2 and a program that calls every function is the test,
+  # with the DLL's exports and that program's imports, which the tests read
+  # from objdump: 2.44 lays both tables out differently.
+  windows-i686-binutils:
     if: github.event_name != 'workflow_dispatch' || inputs.jobs == 'all' || inputs.jobs == 'windows'
-    name: Windows i686 (mingw-w64, binutils 2.40, build only) / gcc
+    name: Windows i686 (mingw-w64, binutils ${{ matrix.binutils }}, build only) / gcc
     runs-on: ubuntu-24.04
-    container: debian:12
+    container: ${{ matrix.image }}
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: debian:12
+            binutils: "2.40"
+          - image: debian:13
+            binutils: "2.44"
     steps:
       - name: Install
         run: |
