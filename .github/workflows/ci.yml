@@ -96,13 +96,14 @@ jobs:
       - name: Test
         run: ctest --test-dir c/build -j "$(nproc)" --output-on-failure --timeout 2400 ${{ matrix.ctest_args }}
 
-  # Big-endian and 32-bit targets, which have only the scalar tier, built on
-  # the x86-64 runner: s390x with Ubuntu's cross compiler, its test programs
-  # under QEMU user emulation; i686 with -m32, run natively. No other job can
-  # see a byte-order mistake: on a little-endian target every byte swap
-  # compiles away. The big-endian job leaves out the tests that take more
-  # than five minutes under emulation, and its per-test limit is short
-  # because a byte-order mistake can make the encoder loop without end.
+  # Targets that have only the scalar tier, built on the x86-64 runner: s390x
+  # (big-endian), riscv64 and ppc64le (64-bit, little-endian, both shipped by
+  # distributions), each with Ubuntu's cross compiler and its test programs
+  # under QEMU user emulation, and i686 with -m32, run natively. No other job
+  # can see a byte-order mistake: on a little-endian target every byte swap
+  # compiles away. The emulated jobs leave out the tests that take more than
+  # five minutes under emulation, and their per-test limit is short because a
+  # byte-order mistake can make the encoder loop without end.
   portability:
     if: github.event_name != 'workflow_dispatch' || inputs.jobs == 'all' || inputs.jobs == 'portability'
     name: ${{ matrix.name }}
@@ -118,6 +119,20 @@ jobs:
               -DCMAKE_SYSTEM_NAME=Linux -DCMAKE_SYSTEM_PROCESSOR=s390x
               -DCMAKE_C_COMPILER=s390x-linux-gnu-gcc
             qemu_ld_prefix: /usr/s390x-linux-gnu
+            ctest_args: "--timeout 600 -E 'mutate|valid|crafted|capacity|cli_compare'"
+          - name: riscv64 (emulated) / gcc
+            packages: gcc-riscv64-linux-gnu libc6-dev-riscv64-cross binutils-multiarch qemu-user-binfmt
+            cmake_args: >-
+              -DCMAKE_SYSTEM_NAME=Linux -DCMAKE_SYSTEM_PROCESSOR=riscv64
+              -DCMAKE_C_COMPILER=riscv64-linux-gnu-gcc
+            qemu_ld_prefix: /usr/riscv64-linux-gnu
+            ctest_args: "--timeout 600 -E 'mutate|valid|crafted|capacity|cli_compare'"
+          - name: ppc64le (emulated) / gcc
+            packages: gcc-powerpc64le-linux-gnu libc6-dev-ppc64el-cross binutils-multiarch qemu-user-binfmt
+            cmake_args: >-
+              -DCMAKE_SYSTEM_NAME=Linux -DCMAKE_SYSTEM_PROCESSOR=ppc64le
+              -DCMAKE_C_COMPILER=powerpc64le-linux-gnu-gcc
+            qemu_ld_prefix: /usr/powerpc64le-linux-gnu
             ctest_args: "--timeout 600 -E 'mutate|valid|crafted|capacity|cli_compare'"
           - name: i686 (32-bit) / gcc
             packages: gcc-multilib
