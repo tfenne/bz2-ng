@@ -3,6 +3,9 @@
 # dumpbin) or OBJDUMP (GNU objdump for the target), which list the export
 # table's names.
 # usage: cmake -DLIB=... -DEXPECTED=... [-DDUMPBIN=... | -DOBJDUMP=...] -P exported_symbols.cmake
+# objdump translates its headings ("[Ordinal/Name Pointer] Table") into the
+# user's language.
+set(ENV{LC_ALL} C)
 if(LIB MATCHES "[.]dll$" AND DUMPBIN)
   execute_process(COMMAND ${DUMPBIN} /nologo /exports ${LIB} OUTPUT_VARIABLE _out RESULT_VARIABLE _rc)
 elseif(LIB MATCHES "[.]dll$")
