@@ -51,7 +51,7 @@ Every kernel tier (§4.5) produces the same bytes; output never depends on the C
 
 | | Documented by libbz2 | bz2-ng |
 |---|---|---|
-| Compression | 400 kB + 8 × block size | inside the formula at every level: 8 × block size + 84,623 bytes on 64-bit targets and 40–50 bytes less on 32-bit ones, measured |
+| Compression | 400 kB + 8 × block size | inside the formula at every level: 8 × block size + 109,511 bytes on 64-bit targets and 40–50 bytes less on 32-bit ones, measured |
 | Decompression | 100 kB + 4 × block size | one block more by default: 100 kB + 5 × block size; an in-formula layout is a build option; see below |
 | Decompression, `small` | 100 kB + 2.5 × block size | inside the formula at every level |
 

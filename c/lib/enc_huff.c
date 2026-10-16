@@ -12,19 +12,21 @@
  * transmitted are those of the last iteration and the lengths those rebuilt
  * after it, so the output is libbz2's bit for bit.
  *
- * hb_make_code_lengths and hb_assign_codes are libbzip2 1.0.8's
- * BZ2_hbMakeCodeLengths and BZ2_hbAssignCodes (huffman.c), and seed_tables
- * and selector_mtf follow compress.c; libbzip2 is Copyright (C) 1996-2019
- * Julian Seward, under the licence in licenses/bzip2-1.0.8.txt. ALTERED for
- * bz2-ng: this is not the original software; names and types are changed and
- * the rest of the stage is rewritten.
+ * hb_assign_codes is libbzip2 1.0.8's BZ2_hbAssignCodes (huffman.c);
+ * hb_make_code_lengths and its helpers are its BZ2_hbMakeCodeLengths, with
+ * the same heap, tie-breaking and merges, restructured to build several
+ * tables side by side; seed_tables and selector_mtf follow compress.c.
+ * libbzip2 is Copyright (C) 1996-2019 Julian Seward, under the licence in
+ * licenses/bzip2-1.0.8.txt. ALTERED for bz2-ng: this is not the original
+ * software; names and types are changed and the rest of the stage is
+ * rewritten.
  */
 #include "enc.h"
 
 #define LESSER_ICOST  0
 #define GREATER_ICOST 15
 
-/* ---- code lengths: libbz2 huffman.c, unchanged apart from names ---------- */
+/* ---- code lengths: libbz2's BZ2_hbMakeCodeLengths, tables side by side --- */
 #define WEIGHTOF(zz0)	((zz0) & 0xffffff00)
 #define DEPTHOF(zz1)	((zz1) & 0x000000ff)
 #define MYMAX(zz2, zz3) ((zz2) > (zz3) ? (zz2) : (zz3))
@@ -32,103 +34,192 @@
 	(WEIGHTOF(zw1) + WEIGHTOF(zw2)) | \
 		(1 + MYMAX(DEPTHOF(zw1), DEPTHOF(zw2)))
 
-#define UPHEAP(z)                                             \
-	{                                                     \
-		s32 zz, tmp;                                  \
-		zz = z;                                       \
-		tmp = heap[zz];                               \
-		while (weight[tmp] < weight[heap[zz >> 1]]) { \
-			heap[zz] = heap[zz >> 1];             \
-			zz >>= 1;                             \
-		}                                             \
-		heap[zz] = tmp;                               \
-	}
+/*
+ * A heap entry is weight << 16 | node. Node numbers are below 2^16, so
+ * a < (b & HEAP_WEIGHT) holds exactly when a's weight is below b's: the heap
+ * compares weights, as libbz2's does, without a load through the node.
+ */
+#define HEAP_WEIGHT (~(u64)0xffff)
+/* Weighs more than any entry: the missing right child of the last parent. */
+#define HEAP_NONE (~(u64)0)
 
-#define DOWNHEAP(z)                                                  \
-	{                                                            \
-		s32 zz, yy, tmp;                                     \
-		zz = z;                                              \
-		tmp = heap[zz];                                      \
-		while (1) {                                          \
-			yy = zz << 1;                                \
-			if (yy > nHeap)                              \
-				break;                               \
-			if (yy < nHeap &&                            \
-			    weight[heap[yy + 1]] < weight[heap[yy]]) \
-				yy++;                                \
-			if (weight[tmp] < weight[heap[yy]])          \
-				break;                               \
-			heap[zz] = heap[yy];                         \
-			zz = yy;                                     \
-		}                                                    \
-		heap[zz] = tmp;                                      \
+/* libbz2's UPHEAP: entry e into slot zz of h, above every heavier parent. */
+static forceinline void
+heap_up(u64 *h, s32 zz, u64 e)
+{
+	while (e < (h[zz >> 1] & HEAP_WEIGHT)) {
+		h[zz] = h[zz >> 1];
+		zz >>= 1;
 	}
+	h[zz] = e;
+}
 
 /*
- * libbz2's BZ2_hbMakeCodeLengths: code lengths len[0..alphaSize) for the
- * frequencies freq, limited to maxLen bits by flattening the weights and
- * rebuilding until they fit.
+ * Removes the root of each of the nl heaps, which hold m + 1 entries, into
+ * top[], as libbz2's "heap[1] = heap[nHeap]; nHeap--; DOWNHEAP(1)" does.
+ * The sift-down moves the lighter child up (the left on a tie) level by level
+ * to the bottom and then lets the displaced last entry climb back past every
+ * heavier entry. libbz2's walk stops at the first child heavier than that
+ * entry; the weights along the path never decrease, so both end in the same
+ * slot. The walk takes the same number of steps in every heap (all have m
+ * entries), so the heaps advance in lock step and their chains of dependent
+ * loads overlap.
+ */
+static forceinline void
+heap_pop(u64 (*heap)[BZ_MAX_ALPHA_SIZE + 2], int nl, s32 m, u64 *top)
+{
+	u64 last[BZ_N_GROUPS];
+	/*
+	 * Each walk starts at the root. Set by an initialiser: a loop storing
+	 * 1s becomes a call to a fill routine, which keeps zz in memory.
+	 */
+	s32 zz[BZ_N_GROUPS] = {1, 1, 1, 1, 1, 1};
+	/* Levels above the last, whose slots all have two children. */
+	s32 full = m > 1 ? (s32)bsr32((u32)m) - 1 : 0;
+
+	STATIC_ASSERT(BZ_N_GROUPS == 6);
+
+	for (int l = 0; l < nl; l++) {
+		top[l] = heap[l][1];
+		last[l] = heap[l][m + 1];
+		heap[l][m + 1] = HEAP_NONE;
+	}
+	for (s32 s = 0; s < full; s++) {
+		for (int l = 0; l < nl; l++) {
+			u64 *h = heap[l];
+			s32 yy = 2 * zz[l];
+			yy += h[yy + 1] < (h[yy] & HEAP_WEIGHT);
+			h[zz[l]] = h[yy];
+			zz[l] = yy;
+		}
+	}
+	for (int l = 0; l < nl; l++) {
+		u64 *h = heap[l];
+		s32 yy = 2 * zz[l];
+		if (yy <= m) {
+			yy += h[yy + 1] < (h[yy] & HEAP_WEIGHT);
+			h[zz[l]] = h[yy];
+			zz[l] = yy;
+		}
+	}
+	for (int l = 0; l < nl; l++)
+		heap_up(heap[l], zz[l], last[l]);
+}
+
+/*
+ * libbz2's tree building for the nl tables tabs[0..nl), side by side: code
+ * lengths into h->len from the weights in h->leaf_weight; too_long[l] says
+ * whether table tabs[l] has a code over maxLen bits. Each heap starts with
+ * alphaSize entries and each merge takes two and puts one back, so all stay
+ * the same size.
+ */
+static forceinline void
+build_tables(bzng_huff_scratch *h, const u8 *tabs, int nl, s32 alphaSize,
+	     s32 maxLen, u8 *too_long)
+{
+	u64(*heap)[BZ_MAX_ALPHA_SIZE + 2] = h->heap;
+	u16(*parent)[BZ_MAX_ALPHA_SIZE * 2] = h->parent;
+	const u32 *leaf[BZ_N_GROUPS];
+	u64 e1[BZ_N_GROUPS], e2[BZ_N_GROUPS];
+	s32 nNodes = alphaSize;
+
+	for (int l = 0; l < nl; l++) {
+		leaf[l] = h->leaf_weight[tabs[l]];
+		heap[l][0] = 0; /* weighs less than any entry */
+	}
+	for (s32 i = 1; i <= alphaSize; i++)
+		for (int l = 0; l < nl; l++)
+			heap_up(heap[l], i, (u64)leaf[l][i] << 16 | (u64)i);
+	for (s32 m = alphaSize - 1; m > 0; m--) {
+		heap_pop(heap, nl, m, e1);
+		heap_pop(heap, nl, m - 1, e2);
+		nNodes++;
+		for (int l = 0; l < nl; l++) {
+			u32 w1 = (u32)(e1[l] >> 16), w2 = (u32)(e2[l] >> 16);
+			parent[l][e1[l] & 0xffff] = (u16)nNodes;
+			parent[l][e2[l] & 0xffff] = (u16)nNodes;
+			heap_up(heap[l], m,
+				(u64)(ADDWEIGHTS(w1, w2)) << 16 | (u64)nNodes);
+		}
+	}
+	for (int l = 0; l < nl; l++) {
+		/*
+		 * A parent is made after its children, so one pass down from
+		 * the root (the last node) gives every depth; libbz2 walks up
+		 * from each leaf, to the same lengths. A u8 holds any depth: a
+		 * leaf at depth d needs a total weight of at least Fib(d + 2)
+		 * times the lightest leaf's, so a block's tree (total below
+		 * 2^20) has fewer than 30 levels.
+		 */
+		u8 depth[BZ_MAX_ALPHA_SIZE * 2];
+		const u16 *par = parent[l];
+		u8 *len = h->len[tabs[l]];
+		u8 longest = 0;
+
+		depth[nNodes] = 0;
+		for (s32 k = nNodes - 1; k > 0; k--)
+			depth[k] = (u8)(depth[par[k]] + 1);
+		for (s32 i = 1; i <= alphaSize; i++) {
+			len[i - 1] = depth[i];
+			longest = MAX(longest, depth[i]);
+		}
+		too_long[l] = longest > maxLen;
+	}
+}
+
+/*
+ * libbz2's BZ2_hbMakeCodeLengths for the nt tables tabs[0..nt): code lengths
+ * h->len[t][0..alphaSize) for the frequencies freq[t], limited to maxLen bits
+ * by flattening the weights of a table whose tree is too deep and building
+ * it again, until it fits. freq is only read; it is not const because C
+ * before C23 does not convert a pointer to arrays into one to const arrays.
  */
 static void
-hb_make_code_lengths(u8 *len, const s32 *freq, s32 alphaSize, s32 maxLen)
+hb_make_code_lengths(bzng_huff_scratch *h, s32 (*freq)[BZ_MAX_ALPHA_SIZE],
+		     const u8 *tabs, int nt, s32 alphaSize, s32 maxLen)
 {
-	s32 nNodes, nHeap, n1, n2, i, j, k;
-	int tooLong;
-	s32 heap[BZ_MAX_ALPHA_SIZE + 2];
-	s32 weight[BZ_MAX_ALPHA_SIZE * 2];
-	s32 parent[BZ_MAX_ALPHA_SIZE * 2];
+	u8 todo[BZ_N_GROUPS], too_long[BZ_N_GROUPS];
 
-	for (i = 0; i < alphaSize; i++)
-		weight[i + 1] = (freq[i] == 0 ? 1 : freq[i]) << 8;
+	for (int l = 0; l < nt; l++) {
+		u32 *w = h->leaf_weight[tabs[l]];
+		const s32 *f = freq[tabs[l]];
 
-	while (1) {
-		nNodes = alphaSize;
-		nHeap = 0;
-		heap[0] = 0;
-		weight[0] = 0;
-		parent[0] = -2;
-		for (i = 1; i <= alphaSize; i++) {
-			parent[i] = -1;
-			nHeap++;
-			heap[nHeap] = i;
-			UPHEAP(nHeap);
-		}
-		while (nHeap > 1) {
-			n1 = heap[1];
-			heap[1] = heap[nHeap];
-			nHeap--;
-			DOWNHEAP(1);
-			n2 = heap[1];
-			heap[1] = heap[nHeap];
-			nHeap--;
-			DOWNHEAP(1);
-			nNodes++;
-			parent[n1] = parent[n2] = nNodes;
-			weight[nNodes] = ADDWEIGHTS(weight[n1], weight[n2]);
-			parent[nNodes] = -1;
-			nHeap++;
-			heap[nHeap] = nNodes;
-			UPHEAP(nHeap);
-		}
-		tooLong = 0;
-		for (i = 1; i <= alphaSize; i++) {
-			j = 0;
-			k = i;
-			while (parent[k] >= 0) {
-				k = parent[k];
-				j++;
-			}
-			len[i - 1] = (u8)j;
-			if (j > maxLen)
-				tooLong = 1;
-		}
-		if (!tooLong)
+		for (s32 i = 0; i < alphaSize; i++)
+			w[i + 1] = (u32)(f[i] == 0 ? 1 : f[i]) << 8;
+		todo[l] = tabs[l];
+	}
+	while (nt > 0) {
+		/* Constant lane counts, so each case's loops unroll. */
+		switch (nt) {
+		case 1:
+			build_tables(h, todo, 1, alphaSize, maxLen, too_long);
 			break;
-		for (i = 1; i <= alphaSize; i++) {
-			j = weight[i] >> 8;
-			j = 1 + (j / 2);
-			weight[i] = j << 8;
+		case 2:
+			build_tables(h, todo, 2, alphaSize, maxLen, too_long);
+			break;
+		case 3:
+			build_tables(h, todo, 3, alphaSize, maxLen, too_long);
+			break;
+		case 4:
+			build_tables(h, todo, 4, alphaSize, maxLen, too_long);
+			break;
+		case 5:
+			build_tables(h, todo, 5, alphaSize, maxLen, too_long);
+			break;
+		default:
+			build_tables(h, todo, 6, alphaSize, maxLen, too_long);
+			break;
 		}
+		int n = 0;
+		for (int l = 0; l < nt; l++) {
+			if (!too_long[l])
+				continue;
+			u32 *w = h->leaf_weight[todo[l]];
+			for (s32 i = 1; i <= alphaSize; i++)
+				w[i] = (1 + (w[i] >> 8) / 2) << 8;
+			todo[n++] = todo[l];
+		}
+		nt = n;
 	}
 }
 
@@ -224,6 +315,8 @@ selector_mtf(const u8 *selector, s32 nSelectors, s32 nGroups, u8 *selectorMtf)
  *   table);
  * - rfreq counted in two interleaved copies to break store-to-load chains on
  *   runs of the same MTF value;
+ * - a table that no group moved into or out of keeps its code lengths: they
+ *   are a function of its counts alone, so rebuilding it would give the same;
  * - emission through a 64-bit accumulator with one (code << 5 | len) lookup
  *   per symbol and one flush per three symbols (7 + 3 * 17 <= 63 bits).
  */
@@ -251,8 +344,10 @@ bzng_huff_encode(bzng_huff_scratch *h, const u16 *mtfv, s32 nMTF,
 		 * result is the same as recounting from zero, as libbz2 does.
 		 */
 		int recount = iter == 0;
+		u8 dirty[BZ_N_GROUPS];
 		if (recount)
 			memset(h->rfreq, 0, sizeof h->rfreq);
+		memset(dirty, recount, sizeof dirty);
 		for (s32 v = 0; v < alphaSize; v++) {
 			u64 w = 0;
 			for (s32 t = 0; t < nGroups; t++)
@@ -295,19 +390,25 @@ bzng_huff_encode(bzng_huff_scratch *h, const u16 *mtfv, s32 nMTF,
 			} else if (bt != prev_sel[grp]) {
 				s32 *from = rfreq[0][prev_sel[grp]],
 				    *to = rfreq[0][bt];
+				dirty[prev_sel[grp]] = 1;
+				dirty[bt] = 1;
 				for (int k = 0; k < gl; k++) {
 					from[g[k]]--;
 					to[g[k]]++;
 				}
 			}
 		}
+		u8 tabs[BZ_N_GROUPS];
+		int nt = 0;
 		for (s32 t = 0; t < nGroups; t++) {
 			if (recount)
 				for (s32 v = 0; v < alphaSize; v++)
 					rfreq[0][t][v] += rfreq[1][t][v];
-			hb_make_code_lengths(&len[t][0], &rfreq[0][t][0],
-					     alphaSize, BZNG_MAX_CODE_LEN);
+			if (dirty[t])
+				tabs[nt++] = (u8)t;
 		}
+		hb_make_code_lengths(h, rfreq[0], tabs, nt, alphaSize,
+				     BZNG_MAX_CODE_LEN);
 		memcpy(prev_sel, selector, (size_t)nSelectors);
 	}
 

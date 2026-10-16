@@ -91,6 +91,14 @@ typedef struct {
 	s32 rfreq[2][BZ_N_GROUPS][BZ_MAX_ALPHA_SIZE];
 	u64 pk[BZ_MAX_ALPHA_SIZE];
 	u32 ce[BZ_N_GROUPS][BZ_MAX_ALPHA_SIZE];
+	/*
+	 * The code-length builder's arrays: leaf weights by table (index 1 to
+	 * the alphabet size), and a heap and the tree's parent links for each
+	 * of the tables built side by side.
+	 */
+	u32 leaf_weight[BZ_N_GROUPS][BZ_MAX_ALPHA_SIZE + 1];
+	u64 heap[BZ_N_GROUPS][BZ_MAX_ALPHA_SIZE + 2];
+	u16 parent[BZ_N_GROUPS][BZ_MAX_ALPHA_SIZE * 2];
 	u8 selector[BZ_MAX_SELECTORS];
 	u8 selector_mtf[BZ_MAX_SELECTORS];
 	u8 prev_sel[BZ_MAX_SELECTORS];
