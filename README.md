@@ -30,7 +30,7 @@ bz2-ng is never slower than libbz2 in any measured cell — every file of the be
 
 The library is complete and hardened: it passes its differential testers (which drive stock libbz2 and bz2-ng with identical call sequences and compare every return code, every buffer and every byte of output) on x86-64 and AArch64 with gcc, clang, Apple clang and MSVC, and under emulation on big-endian (s390x) and 32-bit (i386, armv7, mips) targets; bzip2's own `make test` and CPython's `test_bz2` pass against it; a fuzzing campaign of 24 CPU-hours per target on each of two machines found nothing. It builds for Windows with MSVC and mingw-w64 and passes its tests there.
 
-It has been validated as a rebuild-free drop-in on Ubuntu 24.04: installed over the distribution's library and programs, the unmodified test suites of libarchive, HTSlib and samtools, CPython, GNU tar, `file` and the bzip2 package itself pass exactly as before, with byte-identical bzip2 streams, and `cmake --install` lays the files out as each platform's bzip2 package does. Not supported: Windows on ARM64. See `docs/spec.md` §7 for the milestones and what is left.
+It has been validated as a rebuild-free drop-in on Ubuntu 24.04 and, independently, on Debian 13: installed over the distribution's library and programs, the unmodified test suites of libarchive, HTSlib and samtools, CPython, GNU tar, `file` and the bzip2 package itself pass exactly as before, with byte-identical bzip2 streams, and `cmake --install` lays the files out as each platform's bzip2 package does. On Alpine 3.23, which uses musl, HTSlib's and samtools' suites also pass as before with bz2-ng installed over Alpine's libbz2, and so do bzip2's own comparisons with bz2-ng's program. The Debian and Alpine runs were made by a contributor (issues #14 and #13); the scripts and logs are at [YadeWira/bz2ng-dropin-checks](https://github.com/YadeWira/bz2ng-dropin-checks). Not supported: Windows on ARM64. See `docs/spec.md` §7 for the milestones and what is left.
 
 ## Building and testing
 
@@ -48,7 +48,7 @@ Build options (`-D` on the configure line):
 
 | Option | Default | What it does |
 |---|---|---|
-| `BZ2NG_SONAME` | `1.0` | Shared-library SONAME version: `1.0` as upstream and Debian/Ubuntu use, `1` as Fedora and openSUSE use. |
+| `BZ2NG_SONAME` | `1.0` | Shared-library SONAME version: `1.0` as upstream and Debian/Ubuntu use, `1` as Fedora, openSUSE and Alpine use. |
 | `BZ2NG_DECODER_IN_FORMULA` | `OFF` | Keep decompression memory inside libbz2's documented 100 kB + 4 × block size. The default uses one block more (100 kB + 5 × block size) and decompresses full-size blocks 1–7% faster, depending on the machine; see "Compatibility" below. |
 | `BZ2NG_NO_STDIO` | `OFF` | Build without the `FILE *` layer, as libbz2's `BZ_NO_STDIO` does. |
 | `BZ2NG_BUILD_SHARED`, `BZ2NG_BUILD_PROGRAMS`, `BZ2NG_BUILD_TESTS`, `BZ2NG_BUILD_BENCH`, `BZ2NG_BUILD_FUZZ` | shared, programs and tests `ON`; bench and fuzz `OFF` | What to build besides the static library. |
@@ -71,7 +71,7 @@ DESTDIR="$PWD/stage" cmake --install build      # or without DESTDIR, over the d
 | Platform | Configure with | Library files |
 |---|---|---|
 | Debian, Ubuntu | (nothing) | `libbz2.so.1.0.8`, SONAME `libbz2.so.1.0`, links `libbz2.so.1.0`, `libbz2.so.1`, `libbz2.so`; `libbz2.a` |
-| Fedora | `-DBZ2NG_SONAME=1` | `libbz2.so.1.0.8`, SONAME `libbz2.so.1`, links `libbz2.so.1`, `libbz2.so`; `libbz2.a` |
+| Fedora, Alpine | `-DBZ2NG_SONAME=1` | `libbz2.so.1.0.8`, SONAME `libbz2.so.1`, links `libbz2.so.1`, `libbz2.so`; `libbz2.a` |
 | macOS | (nothing) | `libbz2.1.0.8.dylib`, install name `<prefix>/lib/libbz2.1.0.dylib`, links `libbz2.1.0.dylib`, `libbz2.dylib`; `libbz2.a` |
 | Windows, mingw-w64 (msys2) | (nothing) | `bin/libbz2-1.dll`, `lib/libbz2.dll.a`, `lib/libbz2.a` |
 | Windows, MSVC (vcpkg) | (nothing) | `bin/bz2.dll`, `lib/bz2.lib`, `lib/bz2_static.lib`; with `-DBZ2NG_BUILD_SHARED=OFF`, `lib/bz2.lib` alone; Debug builds end in `d` |
@@ -92,7 +92,7 @@ Where bz2-ng deliberately differs from libbz2 1.0.8 (`docs/spec.md` §2.5 has th
 - **A decompression call after an error** returns the same error again. libbz2 resumes its state machine, which the manual does not permit and which reaches undefined behaviour inside libbz2 itself.
 - **Exactly periodic blocks** (for example a block of all zeros) have several valid BWT origins; libbz2's choice depends on which of its sorters ran, bz2-ng always writes the last. Such streams differ in 24 bits and decode identically. No file in any benchmark corpus is affected; one 600-byte test input in HTSlib's suite is. Only a byte comparison of compressed output across implementations can see it.
 - **Diagnostics** at `verbosity` 2 and above that describe libbz2's own sorter are not printed, since that sorter no longer exists.
-- **Private symbols** that leak from libbz2's shared library (`BZ2_blockSort`, `BZ2_decompress`, `BZ2_crc32Table` and the like) are not exported. They are not part of the API. A scan of every package that links libbz2 in Ubuntu 24.04 and Fedora 44 found one that references them, Ubuntu's `unalz`, which bundles a modified copy of libbz2's decoder; it needs rebuilding with its own bzip2 code.
+- **Private symbols** that leak from libbz2's shared library (`BZ2_blockSort`, `BZ2_decompress`, `BZ2_crc32Table` and the like) are not exported. They are not part of the API. A scan of every package that links libbz2 in Ubuntu 24.04 and Fedora 44, and an independent one of Alpine 3.23 (issue #13), found one that references them, Ubuntu's `unalz`, which bundles a modified copy of libbz2's decoder; it needs rebuilding with its own bzip2 code.
 
 ## Layout
 
