@@ -57,7 +57,7 @@ report_failure(const char *family, const uint8_t *T, int32_t n, int sorter,
 	if (failures > 20)
 		return;
 	fprintf(stderr, "FAIL family=%s n=%d sorter=%d: %s; block starts",
-		family, n, sorter, what);
+		family, (int)n, sorter, what);
 	for (int32_t i = 0; i < n && i < 24; i++)
 		fprintf(stderr, " %02x", T[i]);
 	fprintf(stderr, "\n");

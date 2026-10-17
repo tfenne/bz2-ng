@@ -108,9 +108,12 @@ endforeach()
 # One input buffer longer than PTRDIFF_MAX, which only a 32-bit process can be
 # handed; the program reports itself skipped where pointers are 64-bit or the
 # buffer cannot be mapped.
-bzng_test_program(dec_bigbuf dec_bigbuf.c)
-add_test(NAME dec_input_over_2gib COMMAND dec_bigbuf)
-set_tests_properties(dec_input_over_2gib PROPERTIES SKIP_RETURN_CODE 77)
+# DJGPP has neither mmap() nor the virtual address space required by this test.
+if(NOT BZ2NG_TARGET_DJGPP)
+  bzng_test_program(dec_bigbuf dec_bigbuf.c)
+  add_test(NAME dec_input_over_2gib COMMAND dec_bigbuf)
+  set_tests_properties(dec_input_over_2gib PROPERTIES SKIP_RETURN_CODE 77)
+endif()
 
 bzng_test_program(sort_test sort_test.c)
 bzng_tier_test(sort_oracle $<TARGET_FILE:sort_test>)

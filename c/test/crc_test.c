@@ -94,7 +94,7 @@ check_kernel(const char *name, crc32_func_t f)
 
 			if (want != got) {
 				printf("FAIL %s from register %08x len %zu\n",
-				       name, regs[r], len);
+				       name, (unsigned)regs[r], len);
 				failures++;
 				return;
 			}

@@ -235,8 +235,8 @@ compress_block(bzng_estate *s, Bool is_last_block)
 		if (s->verbosity >= 2)
 			VPrintf4("    block %d: crc = 0x%08x, combined CRC = "
 				 "0x%08x, size = %d\n",
-				 s->block_no, block_crc, s->combined_crc,
-				 s->rle.nblock);
+				 (int)s->block_no, (unsigned)block_crc,
+				 (unsigned)s->combined_crc, (int)s->rle.nblock);
 	}
 
 	if (s->block_no == 1) {
@@ -259,7 +259,7 @@ compress_block(bzng_estate *s, Bool is_last_block)
 		bzng_bw_put(&w, 32, s->combined_crc);
 		if (s->verbosity >= 2)
 			VPrintf1("    final combined CRC = 0x%08x\n   ",
-				 s->combined_crc);
+				 (unsigned)s->combined_crc);
 		if (w.nbits & 7)
 			bzng_bw_put(&w, 8 - (w.nbits & 7), 0);
 		bzng_bw_flush(&w);

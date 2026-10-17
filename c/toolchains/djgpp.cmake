@@ -1,0 +1,20 @@
+# Cross-compile for 32-bit DOS with DJGPP assuming tools in PATH.
+set(CMAKE_SYSTEM_NAME Generic)
+set(CMAKE_SYSTEM_PROCESSOR i386)
+set(CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY)
+
+find_program(BZ2NG_DJGPP_CC NAMES i586-pc-msdosdjgpp-gcc)
+if(NOT BZ2NG_DJGPP_CC)
+  message(FATAL_ERROR "DJGPP cross-compiler i586-pc-msdosdjgpp-gcc was not found on PATH")
+endif()
+get_filename_component(_bzng_djgpp_bin "${BZ2NG_DJGPP_CC}" DIRECTORY)
+find_program(BZ2NG_DJGPP_AR NAMES i586-pc-msdosdjgpp-ar HINTS "${_bzng_djgpp_bin}")
+find_program(BZ2NG_DJGPP_RANLIB NAMES i586-pc-msdosdjgpp-ranlib HINTS "${_bzng_djgpp_bin}")
+if(NOT BZ2NG_DJGPP_AR OR NOT BZ2NG_DJGPP_RANLIB)
+  message(FATAL_ERROR "DJGPP cross-archiver or ranlib was not found")
+endif()
+
+set(CMAKE_C_COMPILER "${BZ2NG_DJGPP_CC}")
+set(CMAKE_AR "${BZ2NG_DJGPP_AR}")
+set(CMAKE_RANLIB "${BZ2NG_DJGPP_RANLIB}")
+set(CMAKE_C_FLAGS_INIT "-march=i386")

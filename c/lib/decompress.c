@@ -339,7 +339,7 @@ decode(bzng_dstate *s, bzng_bits *br)
 
 		s->curr_block_no++;
 		if (s->verbosity >= 2)
-			VPrintf1("\n    [%d: huff+mtf ", s->curr_block_no);
+			VPrintf1("\n    [%d: huff+mtf ", (int)s->curr_block_no);
 
 		s->stored_block_crc = 0;
 		GET_BITS(BZ_X_BCRC_1, uc, 8);
@@ -692,8 +692,8 @@ BZ_API(BZ2_bzDecompress)(bz_stream *strm)
 			s->calc_block_crc = ~s->calc_block_crc;
 			if (s->verbosity >= 3)
 				VPrintf2(" {0x%08x, 0x%08x}",
-					 s->stored_block_crc,
-					 s->calc_block_crc);
+					 (unsigned)s->stored_block_crc,
+					 (unsigned)s->calc_block_crc);
 			if (s->verbosity >= 2)
 				VPrintf0("]");
 			if (s->calc_block_crc != s->stored_block_crc) {
@@ -721,8 +721,8 @@ BZ_API(BZ2_bzDecompress)(bz_stream *strm)
 			if (s->verbosity >= 3)
 				VPrintf2("\n    combined CRCs: stored = "
 					 "0x%08x, computed = 0x%08x",
-					 s->stored_combined_crc,
-					 s->calc_combined_crc);
+					 (unsigned)s->stored_combined_crc,
+					 (unsigned)s->calc_combined_crc);
 			/*
 			 * Not sticky: the stream is finished either way, so
 			 * the next call is BZ_SEQUENCE_ERROR, as in libbz2.
