@@ -26,4 +26,4 @@ bz2-ng is a drop-in replacement for libbz2 1.0.8 with a faster single-threaded e
 
 ## Repository
 
-- CI runs on Linux runners only, at milestones and on merges to `main`, not on every push.
+- CI runs on hosted Linux and Windows runners, never macOS: on every pull request and each push to one, on merges to `main`, and on demand (`gh workflow run ci.yml --ref <branch> -f jobs=<group>`). A change that touches neither `c/` nor the workflow gets no run.

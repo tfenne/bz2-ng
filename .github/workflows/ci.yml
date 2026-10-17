@@ -1,11 +1,10 @@
 name: CI
 
-# Runs when started by hand and when the library changes on main, not on every
-# push: minutes on a private repository are billed, so branches are tested
-# locally and CI is started deliberately at milestones (Actions tab, or
-# `gh workflow run ci.yml --ref <branch>`). Started by hand it can run one
-# group of jobs alone (`-f jobs=windows`), which is how a fix to one job is
-# checked without paying for the others.
+# Runs on every pull request and each push to one, when the library changes
+# on main, and when started by hand (Actions tab, or
+# `gh workflow run ci.yml --ref <branch>`), where it can run one group of jobs
+# alone (`-f jobs=windows`), which is how a fix to one job is checked without
+# running the others. Changes outside the library and this file get no run.
 #
 # CI adds what local runs lack: a machine with nothing installed, other CPUs,
 # and the sanitisers on Linux. It does not repeat the whole suite, which the
@@ -20,6 +19,11 @@ on:
         type: choice
         default: all
         options: [all, build-and-test, portability, windows, msvc, fuzz]
+  pull_request:
+    branches: [main]
+    paths:
+      - "c/**"
+      - ".github/workflows/ci.yml"
   push:
     branches: [main]
     paths:
