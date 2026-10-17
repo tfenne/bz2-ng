@@ -43,7 +43,7 @@ Everything below is deliberate and documented in `docs/spec.md` §2.5 with its e
 
 ## Platforms
 
-Linux and macOS on x86-64 and AArch64 are the reference platforms, with gcc, clang and Apple clang; Windows x86-64 with MSVC and mingw-w64 is built and tested on CI; 32-bit (i386, armv7, mips) and big-endian (s390x, mips) targets pass the suite under emulation and produce the same bytes. Big-endian AArch64 and any platform without a vector tier run the scalar tier. Windows on ARM64 is not supported.
+The supported platforms are those of `docs/spec.md` §4.7. Fully supported: Linux (glibc and musl) and macOS on x86-64 and AArch64 with gcc, clang and Apple clang, and Windows on x86-64 with MSVC and mingw-w64. For correctness only, passing the suite natively or under emulation and producing the same bytes: Linux on i686, s390x, riscv64 and ppc64le, and Windows on i686 with mingw-w64. Nothing else is supported, Windows on ARM64 and the BSDs among them. Platforms without a vector tier run the scalar tier.
 
 Kernel tiers (scalar; SSE4.1 and AVX2 on x86-64; NEON on AArch64) are chosen at run time from the CPU's features, so one build serves every CPU of its architecture and the output never depends on the CPU. The environment variables `BZ2NG_TIER` and, on AArch64, `BZ2NG_NO_PMULL` force a tier or remove the PMULL CRC kernel; they exist for tests and measurement and have no effect on output.
 

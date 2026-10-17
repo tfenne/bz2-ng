@@ -9,6 +9,7 @@ bz2-ng is a drop-in replacement for libbz2 1.0.8 with a faster single-threaded e
 - **No GPL or LGPL code** is read for code or copied (lbzip2, 7-Zip's bzip2 encoder, sdsl-lite and similar). MIT, BSD, zlib-licensed and public-domain code may be reused with its notice kept and altered files marked.
 - **Output is byte-identical to libbz2's** and the legacy API matches libbz2 call for call (`docs/spec.md` §2). A change that alters either is a bug unless the spec lists it as a divergence.
 - **Single-threaded.** No parallel encoder or decoder modes.
+- **Supported platforms are those of `docs/spec.md` §4.7.** No code, build logic or CI for any other platform; a request for one is answered from `CONTRIBUTING.md`.
 
 ## The C library (`c/`)
 

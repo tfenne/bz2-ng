@@ -28,9 +28,9 @@ bz2-ng is never slower than libbz2 in any measured cell — every file of the be
 
 ## Status
 
-The library is complete and hardened: it passes its differential testers (which drive stock libbz2 and bz2-ng with identical call sequences and compare every return code, every buffer and every byte of output) on x86-64 and AArch64 with gcc, clang, Apple clang and MSVC, and under emulation on big-endian (s390x) and 32-bit (i386, armv7, mips) targets; bzip2's own `make test` and CPython's `test_bz2` pass against it; a fuzzing campaign of 24 CPU-hours per target on each of two machines found nothing. It builds for Windows with MSVC and mingw-w64 and passes its tests there.
+The library is complete and hardened: it passes its differential testers (which drive stock libbz2 and bz2-ng with identical call sequences and compare every return code, every buffer and every byte of output) on x86-64 and AArch64 with gcc, clang, Apple clang and MSVC, on big-endian s390x and on riscv64 and ppc64le under emulation, and on 32-bit i686; bzip2's own `make test` and CPython's `test_bz2` pass against it; a fuzzing campaign of 24 CPU-hours per target on each of two machines found nothing. It builds for Windows with MSVC and mingw-w64 and passes its tests there.
 
-It has been validated as a rebuild-free drop-in on Ubuntu 24.04 and, independently, on Debian 13: installed over the distribution's library and programs, the unmodified test suites of libarchive, HTSlib and samtools, CPython, GNU tar, `file` and the bzip2 package itself pass exactly as before, with byte-identical bzip2 streams, and `cmake --install` lays the files out as each platform's bzip2 package does. On Alpine 3.23, which uses musl, HTSlib's and samtools' suites also pass as before with bz2-ng installed over Alpine's libbz2, and so do bzip2's own comparisons with bz2-ng's program. The Debian and Alpine runs were made by a contributor (issues #14 and #13); the scripts and logs are at [YadeWira/bz2ng-dropin-checks](https://github.com/YadeWira/bz2ng-dropin-checks). Not supported: Windows on ARM64. See `docs/spec.md` §7 for the milestones and what is left.
+It has been validated as a rebuild-free drop-in on Ubuntu 24.04 and, independently, on Debian 13: installed over the distribution's library and programs, the unmodified test suites of libarchive, HTSlib and samtools, CPython, GNU tar, `file` and the bzip2 package itself pass exactly as before, with byte-identical bzip2 streams, and `cmake --install` lays the files out as each platform's bzip2 package does. On Alpine 3.23, which uses musl, HTSlib's and samtools' suites also pass as before with bz2-ng installed over Alpine's libbz2, and so do bzip2's own comparisons with bz2-ng's program. The Debian and Alpine runs were made by a contributor (issues #14 and #13); the scripts and logs are at [YadeWira/bz2ng-dropin-checks](https://github.com/YadeWira/bz2ng-dropin-checks). The supported platforms, and what it takes to add one, are in `docs/spec.md` §4.7; others, among them Windows on ARM64, the BSDs and DOS, are not supported. See `docs/spec.md` §7 for the milestones and what is left.
 
 ## Building and testing
 
@@ -100,6 +100,10 @@ Where bz2-ng deliberately differs from libbz2 1.0.8 (`docs/spec.md` §2.5 has th
 - `docs/spec.md` — the specification: compatibility contract, performance requirements, architecture, verification and milestones.
 - `data/` — benchmark corpora: scripts to regenerate the public 1000 Genomes-derived tag and quality corpora (committed in Git LFS) and to fetch the general corpora; see `data/README.md`.
 - `THIRD_PARTY.md` — third-party code in the tree and its licences.
+
+## Contributing
+
+Bug reports and fixes are welcome. `CONTRIBUTING.md` says what a change needs, and that a new feature, or support for another platform, starts as an issue.
 
 ## Licensing
 
