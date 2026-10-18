@@ -990,23 +990,46 @@ ADD_SUFFIX(bzng_least_rotation)(const u8 *tt, s32 n, s32 *cand, int *periodic)
 
 #if VEC_ENABLED
 /*
- * For a list whose first 16 entries are held in a register: removes m[nn]
- * (nn >= 16), shifts m[16..nn-1] up by one, puts carry_byte (the old entry
- * 15) at m[16] and returns the removed byte. m needs 16 bytes of slack.
+ * The most symbols in use for which mtf_tail_move rewrites the whole tail on
+ * every move: past this a block's moves are mostly deep and spread (binary
+ * data), and the loop up to the moved entry costs less than the rewrite.
+ */
+#  define MTF_FULL_TAIL_MAX 160
+
+/*
+ * For a list whose first 16 entries are held in the register head: removes
+ * m[nn] (nn >= 16), shifts m[16..nn-1] up by one, puts head's last entry at
+ * m[16] and returns the removed byte. If tail_limit is zero the loop stops at
+ * nn's vector, and m needs 16 bytes of slack. Otherwise (the block's
+ * n_in_use, at most MTF_FULL_TAIL_MAX, rounded up to a multiple of 16) every
+ * vector of m[16..tail_limit) is rewritten whatever nn is, so the loop runs
+ * the same number of times on every move of a block: one that stopped at
+ * nn's vector would mispredict its exit on most moves of a block whose ranks
+ * spread over several vectors. The first case is the fall-through because
+ * its blocks make far more tail moves per byte (Silesia's mozilla about
+ * 690,000 per MB, QUAL about 13,000).
  */
 static inline u8
-mtf_tail_move(u8 *m, u32 nn, u8 carry_byte)
+mtf_tail_move(u8 *m, u32 nn, u32 tail_limit, vec_t head)
 {
 	const u8 c = m[nn];
-	vec_t carry = vec_dup(carry_byte); /* only its last lane is used */
-	u32 j = 16;
-	for (; j + 16 <= nn; j += 16) {
+	vec_t carry = head; /* only its last lane is used */
+	if (likely(!tail_limit)) {
+		u32 j = 16;
+		for (; j + 16 <= nn; j += 16) {
+			const vec_t v = vec_ld(m + j);
+			vec_st(m + j, vec_shift1(carry, v));
+			carry = v;
+		}
 		const vec_t v = vec_ld(m + j);
-		vec_st(m + j, vec_shift1(carry, v));
+		vec_st(m + j, vec_sel_upto(nn - j, vec_shift1(carry, v), v));
+		return c;
+	}
+	for (u32 j = 16; j < tail_limit; j += 16) {
+		const vec_t v = vec_ld(m + j);
+		vec_st(m + j, vec_sel_upto_at(j, nn, vec_shift1(carry, v), v));
 		carry = v;
 	}
-	const vec_t v = vec_ld(m + j);
-	vec_st(m + j, vec_sel_upto(nn - j, vec_shift1(carry, v), v));
 	return c;
 }
 
@@ -1035,10 +1058,11 @@ mtf_tail_move(u8 *m, u32 nn, u8 carry_byte)
 
 /*
  * Processes one decoded symbol sym_ on the symbol-loop locals (L, nmax, nb,
- * run, rshift, eob, head) and sets res_ to 0, BZNG_EOB or BZ_DATA_ERROR
- * (libbz2's checks at this symbol: N >= 2^21, or the block growing past
- * 100,000 x digit). RUNA/RUNB accumulate a run length in bijective base 2;
- * any other symbol first flushes a pending run of the list's front byte.
+ * run, rshift, eob, head, tail_limit) and sets res_ to 0, BZNG_EOB or
+ * BZ_DATA_ERROR (libbz2's checks at this symbol: N >= 2^21, or the block
+ * growing past 100,000 x digit). RUNA/RUNB accumulate a run length in
+ * bijective base 2; any other symbol first flushes a pending run of the
+ * list's front byte.
  * Run and literal symbols take the same branch-free path: a pending run is
  * flushed with 16-byte stores of the front byte (length 0 for a run symbol),
  * the literal is moved to the front (index 0, a no-op, for a run symbol) and
@@ -1085,7 +1109,7 @@ mtf_tail_move(u8 *m, u32 nn, u8 carry_byte)
 					      head);                          \
 			  c_ = vec_lane0(cv_);                                \
 		  } else {                                                    \
-			  c_ = mtf_tail_move(s->mtf, idx_, vec_lane15(head)); \
+			  c_ = mtf_tail_move(s->mtf, idx_, tail_limit, head); \
 			  head = vec_shift1(vec_dup(c_), head);               \
 		  }                                                           \
 		  L[nb] = c_;                                                 \
@@ -1151,6 +1175,10 @@ ADD_SUFFIX(bzng_symbols)(bzng_dstate *s, bzng_bits *br)
 	u32 nb = s->nblock, run = s->run, rshift = s->run_shift;
 #if VEC_ENABLED
 	vec_t head = vec_ld(s->mtf);
+	/* a literal's index is below n_in_use */
+	const u32 tail_limit = s->n_in_use <= MTF_FULL_TAIL_MAX ?
+				       ((u32)s->n_in_use + 15) & ~15u :
+				       0;
 #endif
 	int result;
 	for (;;) {

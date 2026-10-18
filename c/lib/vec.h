@@ -82,17 +82,23 @@ vec_sel_upto(unsigned k, vec_t a, vec_t b)
 				    8, 9, 10, 11, 12, 13, 14, 15};
 	return vbslq_u8(vcleq_u8(vld1q_u8(iota), vdupq_n_u8((u8)k)), a, b);
 }
+/*
+ * Lanes i with base + i <= k take a, the rest b (base <= 240, k <= 255): the
+ * lanes of a list's entries base..base+15 at positions up to k.
+ */
+static inline vec_t
+vec_sel_upto_at(unsigned base, unsigned k, vec_t a, vec_t b)
+{
+	static const u8 iota[16] = {0, 1, 2,  3,  4,  5,  6,  7,
+				    8, 9, 10, 11, 12, 13, 14, 15};
+	const vec_t pos = vaddq_u8(vld1q_u8(iota), vdupq_n_u8((u8)base));
+	return vbslq_u8(vcleq_u8(pos, vdupq_n_u8((u8)k)), a, b);
+}
 /* Lane 0 of v. */
 static inline u8
 vec_lane0(vec_t v)
 {
 	return vgetq_lane_u8(v, 0);
-}
-/* Lane 15 of v. */
-static inline u8
-vec_lane15(vec_t v)
-{
-	return vgetq_lane_u8(v, 15);
 }
 /* Lane k (k <= 15) broadcast to every lane. */
 static inline vec_t
@@ -171,17 +177,26 @@ vec_sel_upto(unsigned k, vec_t a, vec_t b)
 				   iota); /* lanes 0..k */
 	return _mm_blendv_epi8(b, a, m);
 }
+/*
+ * Lanes i with base + i <= k take a, the rest b (base <= 240, k <= 255): the
+ * lanes of a list's entries base..base+15 at positions up to k.
+ */
+static inline vec_t
+vec_sel_upto_at(unsigned base, unsigned k, vec_t a, vec_t b)
+{
+	const __m128i pos =
+		_mm_add_epi8(_mm_setr_epi8(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11,
+					   12, 13, 14, 15),
+			     _mm_set1_epi8((char)base));
+	const __m128i kv = _mm_set1_epi8((char)k);
+	/* unsigned pos <= k: positions pass 127 */
+	return _mm_blendv_epi8(b, a, _mm_cmpeq_epi8(_mm_max_epu8(pos, kv), kv));
+}
 /* Lane 0 of v. */
 static inline u8
 vec_lane0(vec_t v)
 {
 	return (u8)_mm_cvtsi128_si32(v);
-}
-/* Lane 15 of v. */
-static inline u8
-vec_lane15(vec_t v)
-{
-	return (u8)(_mm_extract_epi16(v, 7) >> 8);
 }
 /* Lane k (k <= 15) broadcast to every lane. */
 static inline vec_t
