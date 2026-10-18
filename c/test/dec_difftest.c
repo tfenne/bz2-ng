@@ -602,6 +602,19 @@ gen_inputs(void)
 								   4]);
 	for (int lv = 1; lv <= 9; lv++)
 		add_stream("mixed_1M", b, 1000000, lv, 0);
+	/*
+	 * bytes drawn evenly from n symbols, one block each: MTF moves from
+	 * every depth of the list, either side of the vector tiers'
+	 * MTF_FULL_TAIL_MAX
+	 */
+	static const int n_used[] = {17, 33, 100, 160, 161, 256};
+	for (size_t k = 0; k < sizeof n_used / sizeof n_used[0]; k++) {
+		for (size_t i = 0; i < 150000; i++)
+			b[i] = (uint8_t)(rnd() % (uint64_t)n_used[k]);
+		char nm[32];
+		snprintf(nm, sizeof nm, "even_%d", n_used[k]);
+		add_stream(nm, b, 150000, 2, 0);
+	}
 	free(b);
 }
 
