@@ -20,6 +20,24 @@
 #include "dec.h"
 
 /*
+ * The code-length counts and perm are filled in HT_PARTS parts of the
+ * alphabet, interleaved, each with counters of its own: neighbouring symbols
+ * mostly have equal lengths, so one part's increments form a chain of
+ * dependent loads and stores, and the parts' chains run in parallel.
+ */
+#define HT_PARTS 4
+
+/* Repeats X(k) for parts 0..3. */
+#define HT_PARTS_4(X) X(0) X(1) X(2) X(3)
+
+/* Counts symbol i of part k. */
+#define HT_COUNT(k) part_count[k][length[i + (k) * q]]++;
+
+/* Places symbol i of part k in perm. */
+#define HT_PLACE(k) \
+	t->perm[offs[k][length[i + (k) * q]]++] = (u16)(i + (k) * q);
+
+/*
  * Builds the decoding table for one code-length set. The result decodes
  * every bit pattern exactly as libbz2's limit/base/perm tables do
  * (huffman.c BZ2_hbCreateDecodeTables with decompress.c GET_MTF_VAL): codes
@@ -30,23 +48,36 @@
 void
 bzng_build_htable(bzng_htable *t, const u8 *length, s32 alpha_size)
 {
+	/* HT_PARTS_4 names the parts by number. */
+	STATIC_ASSERT(HT_PARTS == 4);
+	u32 part_count[HT_PARTS][BZNG_MAX_CODE + 2];
+	memset(part_count, 0, sizeof part_count);
+	const s32 q = alpha_size / HT_PARTS;
+	for (s32 i = 0; i < q; i++) {
+		HT_PARTS_4(HT_COUNT)
+	}
+	for (s32 i = HT_PARTS * q; i < alpha_size; i++)
+		part_count[HT_PARTS - 1][length[i]]++;
+
+	/*
+	 * Part k's symbols of length l follow those of the parts before it:
+	 * perm is ordered by length, then symbol.
+	 */
 	u32 count[BZNG_MAX_CODE + 2];
-	memset(count, 0, sizeof count);
-	for (s32 i = 0; i < alpha_size; i++)
-		count[length[i]]++;
+	s32 offs[HT_PARTS][BZNG_MAX_CODE + 2];
 	int maxlen = 0;
-	for (int l = 1; l <= BZNG_MAX_CODE; l++)
-		if (count[l])
-			maxlen = l;
-	t->maxlen = (u8)maxlen;
-	s32 offs[BZNG_MAX_CODE + 2];
 	s32 code = 0, idx = 0;
 	for (int l = 1; l <= BZNG_MAX_CODE; l++) {
 		t->first_code[l] = code;
 		t->first_idx[l] = idx;
-		offs[l] = idx;
+		for (int k = 0; k < HT_PARTS; k++) {
+			offs[k][l] = idx;
+			idx += (s32)part_count[k][l];
+		}
+		count[l] = (u32)(idx - t->first_idx[l]);
+		if (count[l])
+			maxlen = l;
 		code += (s32)count[l];
-		idx += (s32)count[l];
 		/*
 		 * code <= 258 * 2^(l-1), so the shifted value stays below 2^28
 		 */
@@ -54,13 +85,20 @@ bzng_build_htable(bzng_htable *t, const u8 *length, s32 alpha_size)
 		code <<= 1;
 	}
 	t->limit_lj[BZNG_MAX_CODE + 1] = 0;
-	for (s32 i = 0; i < alpha_size; i++)
-		t->perm[offs[length[i]]++] = (u16)i;
+	t->maxlen = (u8)maxlen;
+	for (s32 i = 0; i < q; i++) {
+		HT_PARTS_4(HT_PLACE)
+	}
+	for (s32 i = HT_PARTS * q; i < alpha_size; i++)
+		t->perm[offs[HT_PARTS - 1][length[i]]++] = (u16)i;
 
 	/*
 	 * Codes of length <= K fill the primary table in canonical order; a
 	 * code's slots start where the previous one's end, so stopping when the
 	 * table is full is exactly libbz2's truncation of oversubscribed sets.
+	 * A code of length l has 2^(K - l) slots, filled by whole stores of
+	 * four or eight entries from four slots on; spans are powers of two,
+	 * so the stores end at the code's last slot.
 	 */
 	const u32 size = 1u << BZNG_HUFF_K;
 	u32 pos = 0;
@@ -68,30 +106,38 @@ bzng_build_htable(bzng_htable *t, const u8 *length, s32 alpha_size)
 	for (int l = 1; l <= short_max && pos < size; l++) {
 		const u32 span = 1u << (BZNG_HUFF_K - l);
 		const u16 *sp = t->perm + t->first_idx[l];
-		for (u32 k = 0; k < count[l] && pos < size; k++) {
+		const u32 n = count[l];
+		for (u32 k = 0; k < n && pos < size; k++) {
 			const u16 e = (u16)(sp[k] << 5 | l);
-#if GCC_PREREQ(1, 0)
-			/*
-			 * gcc stores the entries one at a time; four per
-			 * 8-byte store (spans are powers of two, so the
-			 * stores end at the code's last slot).
-			 */
-			if (span >= 4) {
-				const u64 e4 = 0x0001000100010001ull * e;
-				for (u32 j = 0; j < span; j += 4)
-					memcpy(&t->prim[pos + j], &e4, 8);
-				pos += span;
-				continue;
+			const u16 e8[8] = {e, e, e, e, e, e, e, e};
+			if (span >= 32) {
+				for (u32 j = 0; j < span; j += 32) {
+					memcpy(&t->prim[pos + j], e8, 16);
+					memcpy(&t->prim[pos + j + 8], e8, 16);
+					memcpy(&t->prim[pos + j + 16], e8, 16);
+					memcpy(&t->prim[pos + j + 24], e8, 16);
+				}
+			} else if (span == 16) {
+				memcpy(&t->prim[pos], e8, 16);
+				memcpy(&t->prim[pos + 8], e8, 16);
+			} else if (span == 8) {
+				memcpy(&t->prim[pos], e8, 16);
+			} else if (span == 4) {
+				memcpy(&t->prim[pos], e8, 8);
+			} else {
+				t->prim[pos] = e;
+				t->prim[pos + span - 1] = e;
 			}
-#endif
-			for (u32 j = 0; j < span; j++)
-				t->prim[pos + j] = e;
 			pos += span;
 		}
 	}
 	if (pos < size)
 		memset(t->prim + pos, 0, (size - pos) * sizeof t->prim[0]);
 }
+
+#undef HT_PLACE
+#undef HT_COUNT
+#undef HT_PARTS_4
 
 /*
  * The table build splits L into BUILD_PARTS parts of q = n / BUILD_PARTS rows,

@@ -274,6 +274,156 @@ alloc_stream(bzng_dstate *s)
 	return BZ_OK;
 }
 
+/* ---- block header ------------------------------------------------------ */
+
+/*
+ * Whether n (<= 56) bits are held, after one 8-byte refill if they are not
+ * and 8 input bytes remain.
+ */
+static forceinline int
+have_bits_fast(bzng_bits *br, u32 n)
+{
+	if (br->cnt >= n)
+		return 1;
+	if (BZNG_SPAN(br->p, br->end) < 8)
+		return 0;
+	bzng_br_refill_fast(br);
+	return 1;
+}
+
+/*
+ * Appends to seq_to_unseq the byte values base..base + 15 whose bits are set
+ * in the 16-bit map m, the first value in the top bit.
+ */
+static forceinline s32
+map_range(u8 *seq_to_unseq, s32 n, u32 base, u32 m)
+{
+	while (m) {
+		const u32 top = bsr32(m);
+		seq_to_unseq[n++] = (u8)(base + 15 - top);
+		m ^= 1u << top;
+	}
+	return n;
+}
+
+/*
+ * Moves position j (< BZ_N_GROUPS) of the selector MTF list to the front;
+ * the moved group is then the low byte.
+ */
+static forceinline u64
+sel_mtf_move(u64 mtf, u32 j)
+{
+	const u32 sh = 8 * j;
+	const u64 below = mtf & ((1ull << sh) - 1);
+	return (mtf & ~((1ull << sh << 8) - 1)) | below << 8 |
+	       (mtf >> sh & 0xff);
+}
+
+/*
+ * Reads selectors from s->i on while 8 bits are held or 8 input bytes remain:
+ * a selector is a count of leading ones, at most n_groups - 1 of them, ended
+ * by a zero, and its MTF is undone as it is read.  libbz2 1.0.8 keeps the
+ * first BZ_MAX_SELECTORS and reads and ignores the rest.  Returns
+ * BZ_DATA_ERROR after n_groups ones, the bits libbz2 reads before it rejects
+ * the selector; otherwise 0, with the rest left to the bit-serial loop.
+ */
+static int
+read_selectors_fast(bzng_dstate *s, bzng_bits *br)
+{
+	bzng_bits b = *br;
+	u64 mtf = s->sel_mtf;
+	u32 used = s->groups_used;
+	s32 i = s->i;
+	const s32 n = s->n_selectors;
+	const u32 n_groups = (u32)s->n_groups;
+	int ret = 0;
+	while (i < n && have_bits_fast(&b, 8)) {
+		const u32 j = (u32)63 - bsr64(~b.buf | 1);
+		if (j >= n_groups) {
+			bzng_br_take(&b, n_groups);
+			ret = BZ_DATA_ERROR;
+			break;
+		}
+		bzng_br_take(&b, j + 1);
+		if (i < BZ_MAX_SELECTORS) {
+			mtf = sel_mtf_move(mtf, j);
+			s->selector[i] = (u8)mtf;
+			used |= 1u << (mtf & 0xff);
+		}
+		i++;
+	}
+	*br = b;
+	s->sel_mtf = mtf;
+	s->groups_used = (u8)used;
+	s->i = i;
+	return ret;
+}
+
+/*
+ * Reads code lengths of table s->t from symbol s->i on while bits are held,
+ * refilling while 8 input bytes remain.  A symbol's length is the previous
+ * one changed by steps of 10 (+1) or 11 (-1) and ended by a 0, so z zero
+ * bits end z symbols of unchanged length: zeros are counted in one go and
+ * steps taken one at a time.  libbz2 checks the length before each step and
+ * before the 0 that ends a symbol; at the first check that fails this stops
+ * before that bit, leaving the error to the bit-serial loop, which raises it
+ * after the same bits.
+ */
+static void
+read_lengths_fast(bzng_dstate *s, bzng_bits *br)
+{
+	u64 buf = br->buf;
+	u32 cnt = br->cnt;
+	const u8 *p = br->p;
+	const u8 *const end = br->end;
+	s32 curr = s->curr;
+	u32 i = (u32)s->i;
+	const u32 alpha = (u32)s->alpha_size;
+	u8 *const len = s->len[s->t];
+	while (i < alpha) {
+		if (curr < 1 || curr > 20)
+			break;
+		if (cnt < 32 && BZNG_SPAN(p, end) >= 8) {
+			buf |= get_unaligned_be64(p) >> cnt;
+			p += (63 - cnt) >> 3;
+			cnt |= 56;
+		}
+		if (cnt == 0)
+			break;
+		const u32 room = alpha - i < cnt ? alpha - i : cnt;
+		u32 z = (u32)63 - bsr64(buf | 1);
+		if (z > room)
+			z = room;
+		/*
+		 * whole stores, up to BZNG_LEN_SLACK bytes past the run (and
+		 * one for an empty run): later runs overwrite what lies past it
+		 */
+		const u64 v = 0x0101010101010101ull * (u8)curr;
+		u32 k = 0;
+		do {
+			memcpy(len + i + k, &v, 8);
+			memcpy(len + i + k + 8, &v, 8);
+			k += 16;
+		} while (k < z);
+		i += z;
+		buf <<= z;
+		cnt -= z;
+		if (z == room)
+			continue;
+		if (cnt < 2)
+			break;
+		/* a step, 10 or 11 */
+		curr += 1 - 2 * (s32)(buf >> 62 & 1);
+		buf <<= 2;
+		cnt -= 2;
+	}
+	br->buf = buf;
+	br->cnt = cnt;
+	br->p = p;
+	s->curr = curr;
+	s->i = (s32)i;
+}
+
 /*
  * A resumable read of n bits into var: libbz2's GET_BITS.  The case label
  * lets a later call resume at this read; the code before it falls through.
@@ -383,20 +533,38 @@ decode(bzng_dstate *s, bzng_bits *br)
 		if (s->orig_ptr > 10 + 100000 * s->block_size_100k)
 			RETURN(BZ_DATA_ERROR);
 
-		for (s->i = 0; s->i < 16; s->i++) {
+		/*
+		 * the symbol map: 16 bits for the ranges of 16 byte values
+		 * present, then 16 for each range present; whole maps while
+		 * the bits are held or 8 input bytes remain, else bit by bit
+		 */
+		s->i = 0;
+		if (have_bits_fast(br, 16)) {
+			const u32 m = bzng_br_take(br, 16);
+			for (int r = 0; r < 16; r++)
+				s->in_use16[r] = (u8)(m >> (15 - r) & 1);
+			s->i = 16;
+		}
+		for (; s->i < 16; s->i++) {
 			GET_BITS(BZ_X_MAPPING_1, uc, 1);
 			s->in_use16[s->i] = (u8)uc;
 		}
 		s->n_in_use = 0;
 		memset(s->seq_to_unseq, 0, sizeof s->seq_to_unseq);
 		for (s->i = 0; s->i < 16; s->i++) {
-			if (s->in_use16[s->i]) {
-				for (s->j = 0; s->j < 16; s->j++) {
-					GET_BITS(BZ_X_MAPPING_2, uc, 1);
-					if (uc)
-						s->seq_to_unseq[s->n_in_use++] =
-							(u8)(s->i * 16 + s->j);
-				}
+			if (!s->in_use16[s->i])
+				continue;
+			if (have_bits_fast(br, 16)) {
+				s->n_in_use = map_range(
+					s->seq_to_unseq, s->n_in_use,
+					(u32)s->i * 16, bzng_br_take(br, 16));
+				continue;
+			}
+			for (s->j = 0; s->j < 16; s->j++) {
+				GET_BITS(BZ_X_MAPPING_2, uc, 1);
+				if (uc)
+					s->seq_to_unseq[s->n_in_use++] =
+						(u8)(s->i * 16 + s->j);
 			}
 		}
 		cur = BZ_X_MAPPING_2;
@@ -414,47 +582,38 @@ decode(bzng_dstate *s, bzng_bits *br)
 		s->n_selectors = (s32)uc;
 		if (s->n_selectors < 1)
 			RETURN(BZ_DATA_ERROR);
-		for (int v = 0; v < s->n_groups; v++)
-			s->sel_pos[v] = (u8)v;
 		/*
-		 * selector MTF values are undone as they arrive; libbz2 1.0.8
-		 * keeps the first 18002 and reads and ignores the rest. While 8
-		 * input bytes remain, whole selectors are read from the 64-bit
-		 * buffer (a unary code is a count of leading ones); otherwise
-		 * bit by bit.
+		 * selectors, their MTF undone as they arrive (the list starts
+		 * as 0, 1, ..., n_groups - 1): whole selectors while 8 bits
+		 * are held or 8 input bytes remain (read_selectors_fast), else
+		 * bit by bit
 		 */
+		s->sel_mtf = 0x050403020100ull;
+		s->groups_used = 0;
 		s->i = 0;
 		while (s->i < s->n_selectors) {
-			if (br->cnt >= 8 || BZNG_SPAN(br->p, br->end) >= 8) {
-				if (br->cnt < 8)
-					bzng_br_refill_fast(br);
-				u32 j = (u32)63 - bsr64(~br->buf | 1);
-				if (j >= (u32)s->n_groups) {
-					bzng_br_take(br, (u32)s->n_groups);
-					cur = BZ_X_SELECTOR_3;
+			if (read_selectors_fast(s, br)) {
+				cur = BZ_X_SELECTOR_3;
+				RETURN(BZ_DATA_ERROR);
+			}
+			if (s->i == s->n_selectors)
+				break;
+			s->j = 0;
+			for (;;) {
+				GET_BITS(BZ_X_SELECTOR_3, uc, 1);
+				cur = BZ_X_SELECTOR_3;
+				if (uc == 0)
+					break;
+				s->j++;
+				if (s->j >= s->n_groups)
 					RETURN(BZ_DATA_ERROR);
-				}
-				bzng_br_take(br, j + 1);
-				s->j = (s32)j;
-			} else {
-				s->j = 0;
-				for (;;) {
-					GET_BITS(BZ_X_SELECTOR_3, uc, 1);
-					cur = BZ_X_SELECTOR_3;
-					if (uc == 0)
-						break;
-					s->j++;
-					if (s->j >= s->n_groups)
-						RETURN(BZ_DATA_ERROR);
-				}
 			}
 			if (s->i < BZ_MAX_SELECTORS) {
-				int v = s->j;
-				const u8 tmp = s->sel_pos[v];
-				for (; v > 0; v--)
-					s->sel_pos[v] = s->sel_pos[v - 1];
-				s->sel_pos[0] = tmp;
-				s->selector[s->i] = tmp;
+				s->sel_mtf =
+					sel_mtf_move(s->sel_mtf, (u32)s->j);
+				s->selector[s->i] = (u8)s->sel_mtf;
+				s->groups_used |=
+					(u8)(1u << (s->sel_mtf & 0xff));
 			}
 			s->i++;
 		}
@@ -464,14 +623,18 @@ decode(bzng_dstate *s, bzng_bits *br)
 		/*
 		 * code lengths: a 5-bit start, then per symbol steps of
 		 * 10 (+1) or 11 (-1) ended by 0, the range checked before
-		 * every step; two bits at a time from the 64-bit buffer while
-		 * 8 input bytes remain
+		 * every step; runs from the 64-bit buffer (read_lengths_fast),
+		 * else two bits at a time while 8 input bytes remain, else bit
+		 * by bit
 		 */
 		for (s->t = 0; s->t < s->n_groups; s->t++) {
 			GET_BITS(BZ_X_CODING_1, uc, 5);
 			s->curr = (s32)uc;
 			s->i = 0;
 			while (s->i < s->alpha_size) {
+				read_lengths_fast(s, br);
+				if (s->i == s->alpha_size)
+					break;
 				for (;;) {
 					cur = BZ_X_CODING_1;
 					if (s->curr < 1 || s->curr > 20)
@@ -504,8 +667,15 @@ decode(bzng_dstate *s, bzng_bits *br)
 			}
 		}
 
+		/*
+		 * Only the tables a kept selector names are ever read.  In
+		 * small blocks libbz2's encoder often leaves a group unused,
+		 * and still sends its code lengths.
+		 */
 		for (int t = 0; t < s->n_groups; t++)
-			bzng_build_htable(&s->tab[t], s->len[t], s->alpha_size);
+			if (s->groups_used >> t & 1)
+				bzng_build_htable(&s->tab[t], s->len[t],
+						  s->alpha_size);
 
 		s->eob = (u32)s->n_in_use + 1;
 		s->nblock_max = 100000u * (u32)s->block_size_100k;
