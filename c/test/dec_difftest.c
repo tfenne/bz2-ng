@@ -1117,6 +1117,49 @@ gen_crafted(void)
 				     variant == 2 || variant == 4);
 		}
 	}
+
+	/*
+	 * Code-length sets in long runs of equal lengths: every byte value in
+	 * use (258 symbols), six groups of which the selectors name only two
+	 * (one of the others oversubscribed), and lengths that leave 1..20 in
+	 * the middle of a set, going down and going up
+	 */
+	{
+		uint8_t t[3000];
+		for (size_t i = 0; i < sizeof t; i++)
+			t[i] = (uint8_t)(i * 7 + i / 256);
+		for (int variant = 0; variant < 3; variant++) {
+			memset(&k, 0, sizeof k);
+			craft_from_text(&k, t, sizeof t, syms[0]);
+			int alpha = 2;
+			for (int c = 0; c < 256; c++)
+				alpha += k.in_use[c];
+			k.n_groups = 6;
+			k.n_selectors = (int)((k.n_syms + 49) / 50);
+			for (int i = 0; i < k.n_selectors; i++)
+				sels[i] = (uint8_t)(i % 3 == 0 ? 5 : 2);
+			k.selectors = sels;
+			for (int g = 0; g < BZ_N_GROUPS; g++)
+				for (int i = 0; i < alpha; i++)
+					k.len[g][i] = 9;
+			/* group 5: runs of 1, 2, 3, ... lengths of 9 to 12 */
+			for (int i = 0, r = 1; i < alpha; r++)
+				for (int m = 0; m < r && i < alpha; m++, i++)
+					k.len[5][i] = (uint8_t)(9 + r % 4);
+			for (int i = 0; i < alpha; i++)
+				k.len[1][i] = 1;
+			const char *what = "length_runs_unused_groups";
+			if (variant == 1) {
+				k.len[3][200] = 0;
+				what = "length_below_1";
+			} else if (variant == 2) {
+				k.len[4][130] = 21;
+				what = "length_above_20";
+			}
+			snprintf(name, sizeof name, "crafted/%s", what);
+			craft_stream(name, 9, &k, 1, variant == 0);
+		}
+	}
 }
 
 /* Every input split, every output split and the fixed chunkings, both
