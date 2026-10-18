@@ -788,6 +788,33 @@ set_ll(bzng_dstate *s, u32 i, u32 v)
 }
 
 /*
+ * Blocks whose walk segments average fewer bytes than this are gathered
+ * (gather_text).  The copy costs every text byte once; what it saves is
+ * per piece, at each of which un-RLE1 goes byte by byte over up to 19 bytes
+ * and through a pending run for every run there.
+ */
+#define GATHER_SEG_BYTES 512u
+
+/*
+ * Copies the block's text, positions 0..n, from the pool into the table's
+ * memory, which nothing reads again before the next block's build, so that
+ * the output stage reads it as one piece.  It takes the pieces from the pool
+ * reader as the output stage would, so position n is the byte the reader
+ * gives after the text, as libbz2's walk goes on round the cycle.
+ */
+static void
+gather_text(bzng_dstate *s, u32 n)
+{
+	u8 *const text = s->tbl;
+	for (u32 pos = 0; pos < n; pos += s->rd_len) {
+		bzng_next_piece(s, n - pos);
+		memcpy(text + pos, s->rd_ptr, s->rd_len);
+	}
+	bzng_next_piece(s, 1);
+	text[n] = s->rd_ptr[0];
+}
+
+/*
  * Builds the inverse-BWT data for the block in s->L[0..n) and positions the
  * text reader at text position 0. No input or output is touched.
  */
@@ -842,6 +869,11 @@ bzng_finish_block(bzng_dstate *s)
 		s->rd_seg = s->seg_origin;
 		s->rd_off = s->seg_start[s->rd_seg];
 		s->rd_seg_left = s->seg_len[s->rd_seg];
+		/* a randomised block is read byte by byte through minibuf */
+		if (!s->randomised && n < GATHER_SEG_BYTES * s->n_seg) {
+			gather_text(s, n);
+			s->source = BZNG_SRC_TEXT;
+		}
 	}
 	s->text_left = n;
 	s->rd_len = 0;
@@ -906,12 +938,18 @@ rand_mask(bzng_dstate *s)
 
 /*
  * Makes the next piece of text (at most `limit` bytes) current in
- * s->rd_ptr/s->rd_len. Pool blocks that are not randomised hand out the pool
- * directly; everything else goes through minibuf.
+ * s->rd_ptr/s->rd_len. Gathered text and pool blocks that are not randomised
+ * are handed out directly; everything else goes through minibuf.
  */
 void
 bzng_next_piece(bzng_dstate *s, u32 limit)
 {
+	if (s->source == BZNG_SRC_TEXT) {
+		/* the rest of the text, or at its end position n */
+		s->rd_ptr = s->tbl + (s->nblock - s->text_left);
+		s->rd_len = limit;
+		return;
+	}
 	if (s->source == BZNG_SRC_POOL && !s->randomised) {
 		const u8 *p;
 		u32 l;

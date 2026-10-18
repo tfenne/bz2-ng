@@ -90,7 +90,8 @@ typedef enum {
 /* Text sources for the output stage. */
 typedef enum {
 	BZNG_SRC_POOL = 0,
-	BZNG_SRC_SMALL = 1
+	BZNG_SRC_SMALL = 1,
+	BZNG_SRC_TEXT = 2 /* the pool's text gathered in order into tbl */
 } bzng_source;
 
 /* Decoding table for one coding group. */
@@ -187,8 +188,8 @@ typedef struct bzng_dstate {
 	u8 *area, *area2;
 	size_t area_bytes, area2_bytes;
 	u8 *L;	 /* symbol-loop output; pool after the build */
-	u8 *tbl; /* inverse-BWT table (3- or 4-byte entries) or small-mode ll16
-		  */
+	u8 *tbl; /* inverse-BWT table (3- or 4-byte entries) or small-mode
+		    ll16; after the walk, a gathered block's text */
 	u8 *ll4; /* small mode: high nibbles of the 20-bit entries */
 	u32 *chunk_next;
 	u32 *seg_row, *seg_start, *seg_len, *seg_next;

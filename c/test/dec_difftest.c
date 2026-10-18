@@ -829,22 +829,18 @@ rotation_cmp(const void *pa, const void *pb)
 }
 
 /*
- * Fills k's symbol map, origPtr and symbols for the RLE1 text t[0..n)
- * (n >= 1): bzip2's BWT by sorting rotations, then MTF and RUNA/RUNB coding.
- * syms needs room for n + 2 symbols.
+ * Fills k's symbol map, origPtr and symbols for the block whose last column
+ * is l[0..n) (n >= 1), with origPtr op: MTF and RUNA/RUNB coding.  syms needs
+ * room for n + 2 symbols.
  */
 static void
-craft_from_text(CraftBlock *k, const uint8_t *t, size_t n, uint16_t *syms)
+craft_from_l(CraftBlock *k, const uint8_t *l, size_t n, uint32_t op,
+	     uint16_t *syms)
 {
-	size_t *rot = malloc(n * sizeof(size_t));
-	for (size_t i = 0; i < n; i++)
-		rot[i] = i;
-	craft_text = t;
-	craft_n = n;
-	qsort(rot, n, sizeof(size_t), rotation_cmp);
 	memset(k->in_use, 0, sizeof k->in_use);
 	for (size_t i = 0; i < n; i++)
-		k->in_use[t[i]] = 1;
+		k->in_use[l[i]] = 1;
+	k->orig_ptr = op;
 	uint8_t list[256];
 	int n_in_use = 0;
 	for (int c = 0; c < 256; c++)
@@ -853,9 +849,7 @@ craft_from_text(CraftBlock *k, const uint8_t *t, size_t n, uint16_t *syms)
 	size_t ns = 0;
 	uint32_t zeros = 0;
 	for (size_t i = 0; i < n; i++) {
-		if (rot[i] == 0)
-			k->orig_ptr = (uint32_t)i;
-		const uint8_t c = t[(rot[i] + n - 1) % n];
+		const uint8_t c = l[i];
 		int r = 0;
 		while (list[r] != c)
 			r++;
@@ -875,7 +869,80 @@ craft_from_text(CraftBlock *k, const uint8_t *t, size_t n, uint16_t *syms)
 	syms[ns++] = (uint16_t)(n_in_use + 1);
 	k->syms = syms;
 	k->n_syms = ns;
+}
+
+/*
+ * Fills k for the RLE1 text t[0..n) (n >= 1): bzip2's BWT by sorting
+ * rotations, then craft_from_l.  syms needs room for n + 2 symbols.
+ */
+static void
+craft_from_text(CraftBlock *k, const uint8_t *t, size_t n, uint16_t *syms)
+{
+	size_t *rot = malloc(n * sizeof(size_t));
+	uint8_t *l = malloc(n);
+	uint32_t op = 0;
+	for (size_t i = 0; i < n; i++)
+		rot[i] = i;
+	craft_text = t;
+	craft_n = n;
+	qsort(rot, n, sizeof(size_t), rotation_cmp);
+	for (size_t i = 0; i < n; i++) {
+		if (rot[i] == 0)
+			op = (uint32_t)i;
+		l[i] = t[(rot[i] + n - 1) % n];
+	}
+	craft_from_l(k, l, n, op, syms);
+	free(l);
 	free(rot);
+}
+
+/*
+ * The n + 1 bytes libbz2's walk gives for last column l[0..n) from origPtr
+ * op: the block's text and then the position the walk goes on to.
+ */
+static void
+craft_walk(const uint8_t *l, size_t n, uint32_t op, uint8_t *text)
+{
+	uint32_t cf[256] = {0};
+	uint32_t *tt = malloc(n * sizeof *tt);
+	for (size_t i = 0; i < n; i++)
+		cf[l[i]]++;
+	for (uint32_t c = 0, sum = 0; c < 256; c++) {
+		const uint32_t m = cf[c];
+		cf[c] = sum;
+		sum += m;
+	}
+	for (size_t i = 0; i < n; i++)
+		tt[cf[l[i]]++] = (uint32_t)i;
+	uint32_t p = tt[op];
+	for (size_t j = 0; j <= n; j++) {
+		text[j] = l[p];
+		p = tt[p];
+	}
+	free(tt);
+}
+
+/* Whether RLE1 text t[0..n) ends with four equal bytes and no count byte. */
+static int
+ends_without_count(const uint8_t *t, size_t n)
+{
+	uint8_t last = 0;
+	int eq = 0;
+	for (size_t i = 0; i < n; i++) {
+		if (eq && t[i] == last) {
+			eq++;
+		} else {
+			last = t[i];
+			eq = 1;
+		}
+		if (eq == 4) {
+			if (i + 1 == n)
+				return 1;
+			i++; /* the count byte */
+			eq = 0;
+		}
+	}
+	return 0;
 }
 
 /* Code lengths that give every symbol of alpha a code (a complete code
@@ -992,6 +1059,49 @@ gen_crafted(void)
 			snprintf(name, sizeof name,
 				 "crafted/four_equal_tail_%zu%s", n,
 				 randomised ? "_rand" : "");
+			craft_stream(name, 1, &k, 1, 0);
+		}
+	}
+
+	/*
+	 * Last columns that are the BWT of no text: their rows form more than
+	 * one cycle, and the walk from origPtr goes round a cycle shorter than
+	 * the block, on past where it started.  Each is drawn until its text
+	 * ends with four equal bytes and no count byte, and libbz2 takes the
+	 * count from where the walk goes on, which is not the text's first
+	 * byte.  Short, and long enough for the bulk un-RLE1 path, plain and
+	 * randomised.
+	 */
+	static const size_t cycle_lens[] = {6, 9, 600, 3000};
+	uint64_t cs = 0x2545F4914F6CDD1Dull;
+	for (size_t v = 0; v < 4; v++) {
+		uint8_t l[3000], t[3001];
+		const size_t n = cycle_lens[v];
+		uint32_t op;
+		do {
+			for (size_t i = 0; i < n; i++) {
+				cs ^= cs << 13;
+				cs ^= cs >> 7;
+				cs ^= cs << 17;
+				l[i] = (uint8_t)("qqqab"[cs % 5]);
+			}
+			op = (uint32_t)((cs >> 32) % n);
+			craft_walk(l, n, op, t);
+		} while (!ends_without_count(t, n) || t[n] == t[0]);
+		for (int randomised = 0; randomised <= 1; randomised++) {
+			memset(&k, 0, sizeof k);
+			craft_from_l(&k, l, n, op, syms[0]);
+			k.randomised = randomised;
+			k.n_groups = 2;
+			k.n_selectors = (int)((k.n_syms + 49) / 50);
+			memset(sels, 0, sizeof sels);
+			k.selectors = sels;
+			int alpha = 2;
+			for (int c = 0; c < 256; c++)
+				alpha += k.in_use[c];
+			craft_flat_lengths(&k, alpha);
+			snprintf(name, sizeof name, "crafted/cycles_tail_%zu%s",
+				 n, randomised ? "_rand" : "");
 			craft_stream(name, 1, &k, 1, 0);
 		}
 	}
