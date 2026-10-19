@@ -589,9 +589,21 @@ seg_done:
 	if (!lane_step(s, w, &c[i], &p##i, &o##i, tbl, pool, fsh, fit, pf)) \
 		dead |= 1u << (i);
 
+/* One step of lane i with its hot state left in the array. */
+#define LANE_STEP_MEM(i)                                                   \
+	if (!lane_step(s, w, &c[i], &h[i].p, &h[i].o, tbl, pool, fsh, fit, \
+		       pf))                                                \
+		dead |= 1u << (i);
+
 #define LANES_1(X) X(0)
 #define LANES_2(X) X(0) X(1)
 #define LANES_8(X) X(0) X(1) X(2) X(3) X(4) X(5) X(6) X(7)
+#define LANES_24(X)                                                       \
+	LANES_8(X)                                                        \
+	X(8)                                                              \
+	X(9)                                                              \
+	X(10) X(11) X(12) X(13) X(14) X(15) X(16) X(17) X(18) X(19) X(20) \
+		X(21) X(22) X(23)
 
 /*
  * K lanes in lock step until one runs out of segments; returns the mask of
@@ -620,21 +632,28 @@ DEFINE_LOCKSTEP_REG(8)
 
 /*
  * lockstep_K for more lanes than there are registers for: the hot state
- * stays in its array.
+ * stays in its array.  clang unrolls the loop fully, and its code measured
+ * faster on Graviton4 than the written-out steps.  gcc 13 does not honour
+ * the pragma here, and a loop of one lane step per iteration runs up to 12%
+ * slower on Zen 5 depending only on where it lands in the binary, so other
+ * compilers get the 24 steps written out.
  */
 static forceinline u32
 lockstep_24(bzng_dstate *s, walk_pool *w, walk_hot *h, walk_cold *c,
 	    const u8 *tbl, u8 *pool, u32 fsh, int fit, int pf)
 {
 	u32 dead = 0;
+#if defined(__clang__)
 	while (!dead) {
 		UNROLL_FULL
-		for (int k = 0; k < 24; k++) {
-			if (!lane_step(s, w, &c[k], &h[k].p, &h[k].o, tbl, pool,
-				       fsh, fit, pf))
-				dead |= 1u << k;
-		}
+		for (int k = 0; k < 24; k++)
+			LANE_STEP_MEM(k)
 	}
+#else
+	do {
+		LANES_24(LANE_STEP_MEM)
+	} while (!dead);
+#endif
 	return dead;
 }
 
