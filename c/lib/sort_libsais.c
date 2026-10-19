@@ -189,6 +189,22 @@ bzng_lms_bitmap_load(const s32 *bitmap, s32 ints, s32 *out)
 }
 
 /*
+ * Largest block whose final induction, once bzng_rec_repetitive has judged
+ * it repetitive, is sort_recursion.h's (patch 0006). On x86-64 the register
+ * scans gained on MC:Z blocks of up to 64 KiB on every machine measured but
+ * lost to libsais's on 900 kB blocks on Granite Rapids; 2^17 covers every
+ * block of a 64 KiB stream, which RLE1 lengthens by at most a quarter. On
+ * AArch64 they gained at every size.
+ */
+#ifndef BZNG_REC_FINAL_MAX
+#  ifdef ARCH_X86_64
+#    define BZNG_REC_FINAL_MAX (1 << 17)
+#  else
+#    define BZNG_REC_FINAL_MAX INT32_MAX
+#  endif
+#endif
+
+/*
  * libsais's public functions, declared static before libsais.h declares
  * them: its declarations and the definitions then inherit internal linkage
  * (C11 6.2.2), and a prototype that no longer matches is a compile error.
