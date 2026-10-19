@@ -872,6 +872,34 @@ suite_capacity(void)
 				free(p);
 			}
 	}
+	/*
+	 * A run that crosses the capacity of a level-1 block: literals ending
+	 * 0 to 40 bytes short of it, then 2,000 bytes of one value, then
+	 * literals; whole, in a call that ends inside the run, and with a
+	 * flush inside the run.
+	 */
+	size_t nmax = 100000 - 19;
+	for (size_t d = 0; d <= 40; d++) {
+		size_t prefix = nmax - d, n = prefix + 2000 + 300;
+		uint8_t *p = malloc(n);
+		for (size_t i = 0; i < n; i++)
+			p[i] = (uint8_t)(i % 251);
+		memset(p + prefix, 0xff, 2000);
+		char name[96];
+		snprintf(name, sizeof name, "capacity long run d=%zu", d);
+		current_case = name;
+		schedule f = {.kind = SCHED_FIXED};
+		run_stream(p, n, 1, 0, &f);
+		schedule s1 = {.kind = SCHED_SPLIT,
+			       .split = prefix + 300,
+			       .split_action = BZ_RUN};
+		run_stream(p, n, 1, 0, &s1);
+		schedule s2 = {.kind = SCHED_SPLIT,
+			       .split = prefix + 600,
+			       .split_action = BZ_FLUSH};
+		run_stream(p, n, 1, 0, &s2);
+		free(p);
+	}
 	suite_report("capacity");
 }
 
