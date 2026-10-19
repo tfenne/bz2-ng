@@ -124,6 +124,12 @@ bzng_tier_test(sort_oracle $<TARGET_FILE:sort_test>)
 bzng_test_program(sort_test_sais_trap sort_test.c sort_libsais_trap.c)
 target_include_directories(sort_test_sais_trap PRIVATE ${BZ2NG_LIBSAIS_DIR})
 add_test(NAME sort_oracle_sais_trap COMMAND sort_test_sais_trap)
+# The sorter's recursion choice (bzng_rec_repetitive in lib/sort_libsais.c,
+# compiled into the test) against its rule; no other test sees it, since the
+# output is the same whichever recursion runs.
+bzng_test_program(rec_choice_test rec_choice_test.c)
+target_include_directories(rec_choice_test PRIVATE ${BZ2NG_LIBSAIS_DIR})
+add_test(NAME sort_rec_choice COMMAND rec_choice_test)
 if(MSVC)
   set(_symbol_tool ${BZ2NG_SYMBOL_TOOL})
 else()
