@@ -1,0 +1,125 @@
+Puts the prefetches of the recursion's partial-order (6k) and final
+induction scans under LIBSAIS_RECURSION_PREFETCH, which defaults to 1.
+Applies after 0004-keep-lms-bitmap.patch.
+
+libsais_partial_sorting_scan_{left_to_right,right_to_left}_32s_6k and
+libsais_final_sorting_scan_{left_to_right,right_to_left}_32s, the scans of
+libsais_main_32s_recursion's levels, begin each step of their main loop
+with prefetches of entries ahead in SA, of the symbols those entries point
+to and of their buckets; the final scans also load a symbol and branch on
+an entry's sign for each bucket prefetch. With the macro defined to 0 those
+statements are left out and the loops are otherwise unchanged; the macro
+changes no access the scans make to SA, T or the buckets, so the suffix
+array is the same either way. With the macro undefined or 1 the compiled
+code is libsais's.
+
+lib/sort_libsais.c sets it to 0 on AArch64. On the M4 the recursion's
+levels of a 900 kB block fit in its 16 MB L2, and the prefetches and the
+loads and branches that compute their addresses cost more than they save:
+timed on each block's own reduced string (the minimum of 5 runs),
+libsais's recursion without them takes 0.82 of its time on XA:Z's 900 kB
+blocks and 0.81 on dickens's, most of the saving (0.46 and 0.70 of 0.66
+and 0.84 ms per MB of input) in the final induction scans. End to end at
+level 9 with Apple clang 21, 5 rounds interleaved with an identical-binary
+control (screening; every hold was disturbed by macOS background
+daemons, and the holds agree within 0.01): XA:Z 1.05 in 16 KiB, 64 KiB
+and whole-file streams, quality strings 1.03-1.04 / 1.04-1.05 /
+1.03-1.04, dickens 1.06, Silesia 1.07; MC:Z, whose blocks take 0003's
+recursion, and decompression even.
+With gcc 16 (one such hold): XA:Z whole 1.04, dickens 1.05, Silesia 1.06,
+quality strings whole 1.04; MC:Z and decompression even.
+On Graviton4 at level 9, 5 rounds interleaved with an identical-binary
+control, every build with -falign-functions=64, gcc 13 and clang 18:
+XA:Z 16 KiB and whole 1.044 / 1.037 and 1.044 / 1.035, Silesia 1.042
+and 1.039, quality strings 16 KiB / 64 KiB / whole 1.019 / 1.029 / 1.038
+and 1.022 / 1.029 / 1.036; MC:Z even; no cell slower.
+x86-64 cores keep the prefetches: with the macro at 1 the compiled object
+is unchanged.
+--- a/libsais.c
++++ b/libsais.c
+@@ -6,6 +6,7 @@
+  * 0002-bwt-row.patch
+  * 0003-repetitive-recursion.patch
+  * 0004-keep-lms-bitmap.patch
++ * 0005-recursion-prefetch.patch
+  */
+ 
+ /*--
+@@ -153,6 +154,15 @@
+     #define libsais_prefetchw(address) __prefetch2((const void *)(address), 16)
+ #else
+     #error Your compiler, configuration or platform is not supported.
++#endif
++
++/*
++ * bz2-ng: the prefetches of the recursion's partial-order (6k) and final
++ * induction scans are compiled only where LIBSAIS_RECURSION_PREFETCH is
++ * nonzero, the default.
++ */
++#if !defined(LIBSAIS_RECURSION_PREFETCH)
++    #define LIBSAIS_RECURSION_PREFETCH 1
+ #endif
+ 
+ #if !defined(__LITTLE_ENDIAN__) && !defined(__BIG_ENDIAN__)
+@@ -2387,6 +2397,7 @@
+     fast_sint_t i, j;
+     for (i = omp_block_start, j = omp_block_start + omp_block_size - 2 * prefetch_distance - 1; i < j; i += 2)
+     {
++#if LIBSAIS_RECURSION_PREFETCH
+         libsais_prefetchr(&SA[i + 3 * prefetch_distance]);
+ 
+         libsais_prefetchr(&T[SA[i + 2 * prefetch_distance + 0] & SAINT_MAX] - 1);
+@@ -2396,6 +2407,7 @@
+ 
+         sa_sint_t p0 = SA[i + prefetch_distance + 0] & SAINT_MAX; sa_sint_t v0 = BUCKETS_INDEX4(T[p0 - (p0 > 0)], 0); libsais_prefetchw(&buckets[v0]);
+         sa_sint_t p1 = SA[i + prefetch_distance + 1] & SAINT_MAX; sa_sint_t v1 = BUCKETS_INDEX4(T[p1 - (p1 > 0)], 0); libsais_prefetchw(&buckets[v1]);
++#endif
+ 
+         sa_sint_t p2 = SA[i + 0]; d += (p2 < 0); p2 &= SAINT_MAX; sa_sint_t v2 = BUCKETS_INDEX4(T[p2 - 1], T[p2 - 2] >= T[p2 - 1]);
+         SA[buckets[v2]++] = (p2 - 1) | (sa_sint_t)((sa_uint_t)(buckets[2 + v2] != d) << (SAINT_BIT - 1)); buckets[2 + v2] = d;
+@@ -3391,6 +3403,7 @@
+     fast_sint_t i, j;
+     for (i = omp_block_start + omp_block_size - 1, j = omp_block_start + 2 * prefetch_distance + 1; i >= j; i -= 2)
+     {
++#if LIBSAIS_RECURSION_PREFETCH
+         libsais_prefetchr(&SA[i - 3 * prefetch_distance]);
+ 
+         libsais_prefetchr(&T[SA[i - 2 * prefetch_distance - 0] & SAINT_MAX] - 1);
+@@ -3400,6 +3413,7 @@
+ 
+         sa_sint_t p0 = SA[i - prefetch_distance - 0] & SAINT_MAX; sa_sint_t v0 = BUCKETS_INDEX4(T[p0 - (p0 > 0)], 0); libsais_prefetchw(&buckets[v0]);
+         sa_sint_t p1 = SA[i - prefetch_distance - 1] & SAINT_MAX; sa_sint_t v1 = BUCKETS_INDEX4(T[p1 - (p1 > 0)], 0); libsais_prefetchw(&buckets[v1]);
++#endif
+ 
+         sa_sint_t p2 = SA[i - 0]; d += (p2 < 0); p2 &= SAINT_MAX; sa_sint_t v2 = BUCKETS_INDEX4(T[p2 - 1], T[p2 - 2] > T[p2 - 1]);
+         SA[--buckets[v2]] = (p2 - 1) | (sa_sint_t)((sa_uint_t)(buckets[2 + v2] != d) << (SAINT_BIT - 1)); buckets[2 + v2] = d;
+@@ -4861,12 +4875,14 @@
+     fast_sint_t i, j;
+     for (i = omp_block_start, j = omp_block_start + omp_block_size - 2 * prefetch_distance - 1; i < j; i += 2)
+     {
++#if LIBSAIS_RECURSION_PREFETCH
+         libsais_prefetchw(&SA[i + 3 * prefetch_distance]);
+ 
+         sa_sint_t s0 = SA[i + 2 * prefetch_distance + 0]; const sa_sint_t * Ts0 = &T[s0 > 0 ? s0 : 1]; libsais_prefetchr(Ts0 - 1);
+         sa_sint_t s1 = SA[i + 2 * prefetch_distance + 1]; const sa_sint_t * Ts1 = &T[s1 > 0 ? s1 : 1]; libsais_prefetchr(Ts1 - 1);
+         sa_sint_t s2 = SA[i + 1 * prefetch_distance + 0]; if (s2 > 0) { libsais_prefetchw(&induction_bucket[T[s2 - 1]]); libsais_prefetchr(&T[s2] - 2); }
+         sa_sint_t s3 = SA[i + 1 * prefetch_distance + 1]; if (s3 > 0) { libsais_prefetchw(&induction_bucket[T[s3 - 1]]); libsais_prefetchr(&T[s3] - 2); }
++#endif
+ 
+         sa_sint_t p0 = SA[i + 0]; SA[i + 0] = p0 ^ SAINT_MIN; if (p0 > 0) { p0--; SA[induction_bucket[T[p0]]++] = p0 | (sa_sint_t)((sa_uint_t)(T[p0 - (p0 > 0)] < T[p0]) << (SAINT_BIT - 1)); }
+         sa_sint_t p1 = SA[i + 1]; SA[i + 1] = p1 ^ SAINT_MIN; if (p1 > 0) { p1--; SA[induction_bucket[T[p1]]++] = p1 | (sa_sint_t)((sa_uint_t)(T[p1 - (p1 > 0)] < T[p1]) << (SAINT_BIT - 1)); }
+@@ -5512,12 +5528,14 @@
+     fast_sint_t i, j;
+     for (i = omp_block_start + omp_block_size - 1, j = omp_block_start + 2 * prefetch_distance + 1; i >= j; i -= 2)
+     {
++#if LIBSAIS_RECURSION_PREFETCH
+         libsais_prefetchw(&SA[i - 3 * prefetch_distance]);
+ 
+         sa_sint_t s0 = SA[i - 2 * prefetch_distance - 0]; const sa_sint_t * Ts0 = &T[s0 > 0 ? s0 : 1]; libsais_prefetchr(Ts0 - 1);
+         sa_sint_t s1 = SA[i - 2 * prefetch_distance - 1]; const sa_sint_t * Ts1 = &T[s1 > 0 ? s1 : 1]; libsais_prefetchr(Ts1 - 1);
+         sa_sint_t s2 = SA[i - 1 * prefetch_distance - 0]; if (s2 > 0) { libsais_prefetchw(&induction_bucket[T[s2 - 1]]); libsais_prefetchr(&T[s2] - 2); }
+         sa_sint_t s3 = SA[i - 1 * prefetch_distance - 1]; if (s3 > 0) { libsais_prefetchw(&induction_bucket[T[s3 - 1]]); libsais_prefetchr(&T[s3] - 2); }
++#endif
+ 
+         sa_sint_t p0 = SA[i - 0]; SA[i - 0] = p0 & SAINT_MAX; if (p0 > 0) { p0--; SA[--induction_bucket[T[p0]]] = p0 | (sa_sint_t)((sa_uint_t)(T[p0 - (p0 > 0)] > T[p0]) << (SAINT_BIT - 1)); }
+         sa_sint_t p1 = SA[i - 1]; SA[i - 1] = p1 & SAINT_MAX; if (p1 > 0) { p1--; SA[--induction_bucket[T[p1]]] = p1 | (sa_sint_t)((sa_uint_t)(T[p1 - (p1 > 0)] > T[p1]) << (SAINT_BIT - 1)); }

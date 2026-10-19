@@ -256,6 +256,15 @@ bzng_sais_free(void *ptr)
 #  undef __has_builtin
 #endif
 
+/*
+ * Without the prefetches of libsais's recursion scans (patch 0005) on
+ * AArch64, where the M4 and Graviton4 measured faster without them
+ * (docs/spec.md section 4.3); x86-64 keeps them.
+ */
+#if defined(__aarch64__) || defined(_M_ARM64)
+#  define LIBSAIS_RECURSION_PREFETCH 0
+#endif
+
 /* Most of libsais's functions are not used here. */
 #if defined(__GNUC__) || defined(__clang__)
 #  pragma GCC diagnostic push
