@@ -94,7 +94,9 @@ typedef struct {
 	/*
 	 * The code-length builder's arrays: leaf weights by table (index 1 to
 	 * the alphabet size), and a heap and the tree's parent links for each
-	 * of the tables built side by side.
+	 * of the tables built side by side. A heap's slot 0 is a sentinel, and
+	 * a pop writes HEAP_NONE to the two slots after the entries it leaves,
+	 * so a heap reaches index alphabet size + 1.
 	 */
 	u32 leaf_weight[BZ_N_GROUPS][BZ_MAX_ALPHA_SIZE + 1];
 	u64 heap[BZ_N_GROUPS][BZ_MAX_ALPHA_SIZE + 2];

@@ -123,7 +123,7 @@ The legacy drivers own all `bz_stream` bookkeeping. The block encoder and decode
 - **Input stage.** Run-length encoding and CRC over each caller chunk in bulk, with the run state carried between calls. The last run of every call stays pending until a later byte arrives, and a unit-by-unit tail makes each block-full decision, which is what reproduces libbz2's block boundaries. Calls of a few bytes take libbz2's per-byte path.
 - **Least rotation.** The block is rotated to its lexicographically least rotation so that a plain suffix sorter yields bzip2's cyclic order; exactly periodic blocks are sorted through their root.
 - **Sorter.** §4.3.
-- **MTF and zero runs, Huffman, bit output.** The reworked stages of the standalone encoder with identical output: change-position scan for MTF, libbz2's table selection reproduced exactly, 64-bit bit writer.
+- **MTF and zero runs, Huffman, bit output.** The reworked stages of the standalone encoder with identical output: change-position scan for MTF, libbz2's table selection reproduced exactly, 64-bit bit writer. The code-length heaps take each sift-down step, and the first two levels of a leaf's climb, as selects in place of branches on weights that no predictor learns; under gcc the selects are mask arithmetic on the sign of a difference, which gcc 13 compiles to fewer instructions than a mask from a comparison. libbz2's tie order is kept.
 - **Output staging.** A finished block's bits are held in the tail of the sort workspace and released to the caller exactly as libbz2 releases them (whole bytes up to the end-of-block code; the remainder carried into the next block).
 
 ### 4.3 Sorter boundary

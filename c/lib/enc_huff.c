@@ -41,8 +41,34 @@
  * compares weights, as libbz2's does, without a load through the node.
  */
 #define HEAP_WEIGHT (~(u64)0xffff)
-/* Weighs more than any entry: the missing right child of the last parent. */
-#define HEAP_NONE (~(u64)0)
+/*
+ * HEAP_NONE weighs more than any entry: the missing children of the last
+ * parents, in the two slots after the last entry. HEAP_SEL(c, a, b) is
+ * c ? a : b for c 0 or 1. gcc compiles the conditional form of the
+ * sift-down's selects to branches, which mispredict, so for gcc the selects
+ * are mask arithmetic, and their conditions masks: heap_cond is all ones or
+ * zero, made from the sign of a difference (HEAP_LT_MASK), since gcc 13
+ * turns a mask made from a comparison's result into several instructions per
+ * select. The sign is exact because entries are below 2^48 and HEAP_NONE is
+ * kept below 2^63 there.
+ */
+#if GCC_PREREQ(1, 0)
+#  define HEAP_NONE	    ((u64)1 << 62)
+#  define HEAP_SEL(c, a, b) ((b) ^ (((a) ^ (b)) & -(u64)(c)))
+typedef u64 heap_cond;
+typedef size_t heap_idx;
+#  define HEAP_TRUE	     (~(u64)0)
+#  define HEAP_CSEL(c, a, b) ((b) ^ (((a) ^ (b)) & (c)))
+/* All ones when x < y, else 0, for x and y below 2^63. */
+#  define HEAP_LT_MASK(x, y) ((u64)((s64)((x) - (y)) >> 63))
+#else
+#  define HEAP_NONE	     (~(u64)0)
+#  define HEAP_SEL(c, a, b)  ((c) ? (a) : (b))
+typedef int heap_cond;
+typedef s32 heap_idx;
+#  define HEAP_TRUE	     1
+#  define HEAP_CSEL(c, a, b) HEAP_SEL(c, a, b)
+#endif
 
 /* libbz2's UPHEAP: entry e into slot zz of h, above every heavier parent. */
 static forceinline void
@@ -56,27 +82,104 @@ heap_up(u64 *h, s32 zz, u64 e)
 }
 
 /*
+ * heap_up for the alphabet's leaves, with the first two levels of the climb
+ * as selects: leaves go in in symbol order, and their weights rise and fall
+ * without a pattern the branch predictor learns. Slot 0 weighs less than any
+ * entry, so it ends the climb at the root.
+ */
+#if GCC_PREREQ(1, 0)
+static forceinline void
+heap_up_leaf(u64 *h, s32 zz, u64 e)
+{
+	s32 p1 = zz >> 1, p2 = zz >> 2;
+	u64 a1 = h[p1], a2 = h[p2];
+	u64 up1 = HEAP_LT_MASK(e, a1 & HEAP_WEIGHT);
+	/* a2 weighs no more than a1, so up2 implies up1. */
+	u64 up2 = HEAP_LT_MASK(e, a2 & HEAP_WEIGHT);
+
+	h[zz] = HEAP_CSEL(up1, a1, e);
+	h[p1] = HEAP_CSEL(up2, a2, HEAP_CSEL(up1, e, a1));
+	if (unlikely(up2))
+		heap_up(h, p2, e);
+}
+#else
+static forceinline void
+heap_up_leaf(u64 *h, s32 zz, u64 e)
+{
+	s32 p1 = zz >> 1, p2 = zz >> 2;
+	u64 a1 = h[p1], a2 = h[p2];
+	int up1 = e < (a1 & HEAP_WEIGHT);
+	/* a2 weighs no more than a1, so up2 implies up1. */
+	int up2 = e < (a2 & HEAP_WEIGHT);
+
+	h[zz] = HEAP_SEL(up1, a1, e);
+	h[p1] = HEAP_SEL(up2, a2, HEAP_SEL(up1, e, a1));
+	if (unlikely(up2))
+		heap_up(h, p2, e);
+}
+#endif
+
+/*
+ * One level of heap_pop's walk: from slot *zz, whose entry was *cur, to its
+ * lighter child (the left on a tie) among h[yy] and h[yy + 1].
+ */
+#if GCC_PREREQ(1, 0)
+static forceinline void
+pop_step(u64 *h, heap_idx yy, u64 last, heap_idx *zz, u64 *cur, heap_cond *open)
+{
+	yy += h[yy + 1] < (h[yy] & HEAP_WEIGHT);
+	u64 child = h[yy];
+	/* The child weighs no more than last: it moves up. */
+	heap_cond up = HEAP_LT_MASK(child & HEAP_WEIGHT, last + 1);
+
+	h[*zz] = HEAP_CSEL(up, child, HEAP_CSEL(*open, last, *cur));
+	*open = up;
+	*cur = child;
+	*zz = yy;
+}
+#else
+static forceinline void
+pop_step(u64 *h, heap_idx yy, u64 last, heap_idx *zz, u64 *cur, heap_cond *open)
+{
+	u64 a = h[yy], b = h[yy + 1];
+	int right = b < (a & HEAP_WEIGHT);
+	u64 child = HEAP_SEL(right, b, a);
+	int up = !(last < (child & HEAP_WEIGHT));
+
+	h[*zz] = HEAP_SEL(up, child, HEAP_SEL(*open, last, *cur));
+	*open = up;
+	*cur = child;
+	*zz = yy + right;
+}
+#endif
+
+/*
  * Removes the root of each of the nl heaps, which hold m + 1 entries, into
  * top[], as libbz2's "heap[1] = heap[nHeap]; nHeap--; DOWNHEAP(1)" does.
- * The sift-down moves the lighter child up (the left on a tie) level by level
- * to the bottom and then lets the displaced last entry climb back past every
- * heavier entry. libbz2's walk stops at the first child heavier than that
- * entry; the weights along the path never decrease, so both end in the same
- * slot. The walk takes the same number of steps in every heap (all have m
- * entries), so the heaps advance in lock step and their chains of dependent
- * loads overlap.
+ * DOWNHEAP moves the lighter child up (the left on a tie) until the child
+ * weighs more than the displaced last entry, which takes the slot left
+ * open. The weights along that path never decrease, so the walk here goes
+ * on to the bottom with selects in place of DOWNHEAP's data-dependent exit:
+ * the children up to the first heavier than the last entry move up, the
+ * slot the last of them leaves takes the last entry, and the rest of the
+ * path is written back unchanged. The walk takes the same number of steps
+ * in every heap (all have m entries), so the heaps advance in lock step and
+ * their chains of dependent loads overlap.
  */
 static forceinline void
 heap_pop(u64 (*heap)[BZ_MAX_ALPHA_SIZE + 2], int nl, s32 m, u64 *top)
 {
-	u64 last[BZ_N_GROUPS];
+	u64 last[BZ_N_GROUPS], cur[BZ_N_GROUPS] = {0};
 	/*
-	 * Each walk starts at the root. Set by an initialiser: a loop storing
-	 * 1s becomes a call to a fill routine, which keeps zz in memory.
+	 * Each walk starts at the root, with its slot open. Set by
+	 * initialisers: a loop storing 1s becomes a call to a fill routine,
+	 * which keeps zz in memory.
 	 */
-	s32 zz[BZ_N_GROUPS] = {1, 1, 1, 1, 1, 1};
-	/* Levels above the last, whose slots all have two children. */
-	s32 full = m > 1 ? (s32)bsr32((u32)m) - 1 : 0;
+	heap_idx zz[BZ_N_GROUPS] = {1, 1, 1, 1, 1, 1};
+	heap_cond open[BZ_N_GROUPS] = {HEAP_TRUE, HEAP_TRUE, HEAP_TRUE,
+				       HEAP_TRUE, HEAP_TRUE, HEAP_TRUE};
+	/* Levels below the root; all but the last are complete. */
+	s32 depth = m > 0 ? (s32)bsr32((u32)m) : 0;
 
 	STATIC_ASSERT(BZ_N_GROUPS == 6);
 
@@ -84,27 +187,26 @@ heap_pop(u64 (*heap)[BZ_MAX_ALPHA_SIZE + 2], int nl, s32 m, u64 *top)
 		top[l] = heap[l][1];
 		last[l] = heap[l][m + 1];
 		heap[l][m + 1] = HEAP_NONE;
+		heap[l][m + 2] = HEAP_NONE;
 	}
-	for (s32 s = 0; s < full; s++) {
+	for (s32 s = 1; s < depth; s++) {
+		for (int l = 0; l < nl; l++)
+			pop_step(heap[l], 2 * zz[l], last[l], &zz[l], &cur[l],
+				 &open[l]);
+	}
+	if (depth > 0) {
+		/* A slot without children reads two HEAP_NONEs. */
 		for (int l = 0; l < nl; l++) {
-			u64 *h = heap[l];
-			s32 yy = 2 * zz[l];
-			yy += h[yy + 1] < (h[yy] & HEAP_WEIGHT);
-			h[zz[l]] = h[yy];
-			zz[l] = yy;
-		}
-	}
-	for (int l = 0; l < nl; l++) {
-		u64 *h = heap[l];
-		s32 yy = 2 * zz[l];
-		if (yy <= m) {
-			yy += h[yy + 1] < (h[yy] & HEAP_WEIGHT);
-			h[zz[l]] = h[yy];
-			zz[l] = yy;
+			heap_idx yy = 2 * zz[l];
+
+			yy = (heap_idx)HEAP_SEL(yy > (heap_idx)m, (u64)(m + 1),
+						(u64)yy);
+			pop_step(heap[l], yy, last[l], &zz[l], &cur[l],
+				 &open[l]);
 		}
 	}
 	for (int l = 0; l < nl; l++)
-		heap_up(heap[l], zz[l], last[l]);
+		heap[l][zz[l]] = HEAP_CSEL(open[l], last[l], cur[l]);
 }
 
 /*
@@ -130,7 +232,8 @@ build_tables(bzng_huff_scratch *h, const u8 *tabs, int nl, s32 alphaSize,
 	}
 	for (s32 i = 1; i <= alphaSize; i++)
 		for (int l = 0; l < nl; l++)
-			heap_up(heap[l], i, (u64)leaf[l][i] << 16 | (u64)i);
+			heap_up_leaf(heap[l], i,
+				     (u64)leaf[l][i] << 16 | (u64)i);
 	for (s32 m = alphaSize - 1; m > 0; m--) {
 		heap_pop(heap, nl, m, e1);
 		heap_pop(heap, nl, m - 1, e2);
