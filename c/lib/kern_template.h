@@ -256,11 +256,13 @@ copy_literals(u8 *dst, const u8 *src, size_t n)
  * and k + 2 are clear and ends at the next set bit, so successive runs come
  * from bit scans with no load between them; each mask is computed once, as
  * the lookahead of the window before.  Literal bytes are copied when a run
- * or the window's end comes, which may write RUN4_STEP bytes past limit.  It
- * stops at a unit boundary, or between windows inside a literal unit of <= 3
- * bytes that ends within this call (which writes the same bytes however it
- * is split), with the block at most at limit; it returns where it stopped,
- * every byte before which is in the block.
+ * or the window's end comes, which may write RUN4_STEP bytes past limit.  A
+ * run's 255-byte units are written as the windows pass it, each once a byte
+ * of the run follows it, so a run longer than the block's room is read only
+ * until the block is full.  It stops at a unit boundary, or between windows
+ * inside a literal unit of <= 3 bytes that ends within this call (which writes
+ * the same bytes however it is split), with the block at most at limit; it
+ * returns where it stopped, every byte before which is in the block.
  */
 static inline size_t
 rle_windows(const u8 *in, size_t avail, size_t p, u8 *blk, s32 *nbp, s32 limit)
@@ -316,7 +318,15 @@ rle_windows(const u8 *in, size_t avail, size_t p, u8 *blk, s32 *nbp, s32 limit)
 			ends = d & (~(u64)0 << k);
 			in_run = 1;
 		}
-		if (!in_run) {
+		if (in_run) {
+			/* in[lit..base + 64] are all the run's byte. */
+			while (base + 64 - lit >= 255) {
+				if (nb + 5 > limit)
+					goto stop;
+				nb = bzng_put_unit(blk, nb, in[lit], 255);
+				lit += 255;
+			}
+		} else {
 			if (nb + (s32)(base + 64 - lit) > limit)
 				goto stop;
 			copy_literals(blk + nb, in + lit, base + 64 - lit);
@@ -429,11 +439,14 @@ ADD_SUFFIX(bzng_rle_fill)(bzng_rle_state *st, const u8 *in, size_t avail,
 		s32 j = (s32)(bsf64(m) >> RUN4_SHIFT);
 		nb += j;
 		p += (size_t)j;
-		/* A maximal run of >= 4 starts at p. */
+		/*
+		 * A maximal run of >= 4 starts at p.  If it reaches the end of
+		 * the call, its last 1..255 bytes stay pending as one unit.
+		 */
 		u8 c = in[p];
 		size_t L = run_length(in + p, avail - p, c);
-		if (p + L == avail)
-			break; /* may continue in the next call */
+		size_t keep = p + L == avail ? (L - 1) % 255 + 1 : 0;
+		L -= keep;
 		while (L >= 255) {
 			if (nb + 5 > limit)
 				goto tail;
@@ -447,6 +460,8 @@ ADD_SUFFIX(bzng_rle_fill)(bzng_rle_state *st, const u8 *in, size_t avail,
 			nb = bzng_put_unit(blk, nb, c, (s32)L);
 			p += L;
 		}
+		if (keep > 0)
+			goto pending;
 	}
 
 tail:
@@ -460,13 +475,8 @@ tail:
 		size_t L = 1;
 		while (L < max && in[p + L] == c)
 			L++;
-		if (p + L == avail) {
-			st->ch = c;
-			st->len = (s32)L;
-			st->nblock = nb;
-			st->crc = bzng_crc32(crc, in + u, p - u);
-			return avail;
-		}
+		if (p + L == avail)
+			break;
 		nb = bzng_put_unit(blk, nb, c, (s32)L);
 		p += L;
 		if (nb >= nblock_max) {
@@ -477,6 +487,13 @@ tail:
 			return p + 1;
 		}
 	}
+pending:
+	/* in[p..avail) is one unit of at most 255 bytes, left pending. */
+	st->ch = in[p];
+	st->len = (s32)(avail - p);
+	st->nblock = nb;
+	st->crc = bzng_crc32(crc, in + u, p - u);
+	return avail;
 }
 
 /* ---- encoder: MTF + zero-run coding -------------------------------------- */
