@@ -1,0 +1,88 @@
+Keeps the LMS positions of libsais_main_8u's first pass as a bitmap
+where 0001-keep-lms-positions.patch cannot keep them as a list, instead
+of finding them again. Applies after 0003-repetitive-recursion.patch.
+
+Patch 0001 keeps the list of m LMS positions in the last m ints of the
+free space where fs >= m and fs + n >= 4m. The work array gives
+fs >= n/2, so that holds up to m/n = 3/8, and not on the full blocks of
+inputs above it (MC:Z, about 0.40). There this patch keeps a bitmap of
+the positions instead, one bit per position of T in whole machine words
+(bzng_lms_bitmap_ints, b = about n/32 ints), in the last b ints of the
+free space, built from the first pass's list before the radix sort
+overwrites that. After the recursion it writes the positions back,
+ascending, to SA[n - m..n), where libsais_gather_lms_suffixes_8u would
+have put them, and the reconstruction is libsais's as before; the suffix
+array is the same.
+
+It does so where fs >= b + 4, which puts the bitmap beyond SA[0..n + 4)
+(writing the positions back stores up to 4 entries past SA[n - 1], into
+free space the recursion has finished with), and fs - b + n >= 3m, which
+leaves the recursion fs - b + n - 2m >= m ints of free space, at least
+its length, so the argument of docs/spec.md section 4.3 still rules out
+an allocation. With fs = n/2 that is every block up to m/n of about 0.49
+(0.4896 at n = 900,000; no block reaches 0.5). Elsewhere the positions
+are found again as before. The functions are bz2-ng's, in
+lib/sort_libsais.c, which defines them before it includes this file.
+
+Measured on the M4 with Apple clang 21 and gcc 16, bz2-ng's encoder at
+level 9 unless stated, 5 rounds interleaved with an identical-binary
+control, every build with -falign-functions=64, against the same tree
+without this patch: MC:Z whole file 1.051 (clang) and 1.048 (gcc), at
+level 1 1.050 and 1.049; Silesia's x-ray 1.022 and 1.022, at level 1
+1.022 and 1.021; faster in every round. Silesia's mr 1.011 and 1.017, at
+level 1 1.016 and 1.013, half of whose blocks lie above the bitmap's
+edge. Even: MC:Z in 16 KiB, 64 KiB and 640 kB streams (their blocks
+keep the list, the level-9 work array being sized for 900 kB blocks),
+XA:Z and quality strings in every stream size, and Silesia. Timed alone
+on 900 kB of MC:Z, building the bitmap and writing the positions back
+take 0.16 ms/MB, the second pass over T 0.72 ms/MB. The decoder's code
+is unchanged.
+
+On the three Linux reference machines, the same method, each box pinned
+to one CPU, MC:Z whole file at level 9 with gcc 13 and clang 18: Zen 5
+1.037 and 1.029, Granite Rapids 1.031 and 1.032, Graviton4 1.047 and
+1.043. Every other compression cell even but one, quality strings in
+16 KiB streams with clang on Granite Rapids at 0.976, whose blocks keep
+the list: code placement.
+
+--- a/libsais.c
++++ b/libsais.c
+@@ -5,6 +5,7 @@
+  * 0001-keep-lms-positions.patch
+  * 0002-bwt-row.patch
+  * 0003-repetitive-recursion.patch
++ * 0004-keep-lms-bitmap.patch
+  */
+ 
+ /*--
+@@ -6990,6 +6991,18 @@
+          */
+         sa_sint_t keep_lms_suffixes = fs >= m && (fs + n) / 4 >= m;
+         if (keep_lms_suffixes) { fs -= m; memcpy(&SA[n + fs], &SA[n - m], (size_t)m * sizeof(sa_sint_t)); }
++
++        /*
++         * Where the list does not fit, a bitmap of the positions, b ints
++         * from bzng_lms_bitmap_ints (lib/sort_libsais.c, included before
++         * this file), is kept the same way: fs >= b + 4 puts it beyond
++         * SA[0..n + 4), which writing the positions back may overrun by
++         * 4 entries, and fs - b + n >= 3m leaves the recursion
++         * fs - b + n - 2m >= m ints of free space, at least its length.
++         */
++        sa_sint_t lms_bitmap_ints = bzng_lms_bitmap_ints(n);
++        sa_sint_t keep_lms_bitmap = !keep_lms_suffixes && fs - 4 >= lms_bitmap_ints && (fs - lms_bitmap_ints + n) / 3 >= m;
++        if (keep_lms_bitmap) { fs -= lms_bitmap_ints; bzng_lms_bitmap_store(&SA[n - m], m, &SA[n + fs], lms_bitmap_ints); }
+ 
+         if (threads > 1 && n >= 65536) { memset(SA, 0, ((size_t)n - (size_t)m) * sizeof(sa_sint_t)); }
+         libsais_radix_sort_lms_suffixes_8u_omp(T, SA, n, m, flags, buckets, threads, thread_state);
+@@ -7017,6 +7030,11 @@
+             if (keep_lms_suffixes)
+             {
+                 libsais_reconstruct_lms_suffixes_omp(SA, n + fs + m, m, threads);
++            }
++            else if (keep_lms_bitmap)
++            {
++                bzng_lms_bitmap_load(&SA[n + fs], lms_bitmap_ints, &SA[n - m]);
++                libsais_reconstruct_lms_suffixes_omp(SA, n, m, threads);
+             }
+             else
+             {
