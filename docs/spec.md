@@ -86,6 +86,8 @@ Output and memory are fixed by §2, so "better" is speed. The reference is libbz
 
 **When a change gains in one place and loses in another.** The pairings that count most are clang on AArch64 and gcc on x86-64. A small loss with gcc on AArch64 or with clang on x86-64 is acceptable in exchange for a gain on one of those pairings, and is recorded with its figures. Requirement 1 holds on every pairing regardless.
 
+**How a change is timed.** In rounds interleaved with its baseline and with a second, byte-identical build of the baseline as a control, each machine pinned to one CPU; a cell counts as faster or slower only past the larger of 1.5% and twice the control's spread, in at least four of five rounds. Every build in a comparison, the baseline's included, is compiled with `-falign-functions=64`: without it a change's code size moves unrelated functions to other alignments, which moved the decoder's speed by 5–11% with gcc on Granite Rapids after a change to the sorter alone. The shipping build does not use the flag; on its own it gained nothing measurable.
+
 **Where the library stands**
 
 Measured at level 9 through the legacy API with the shipping configuration (the default decoder layout), MB/s with the multiple of libbz2 built by the same compiler, on the pairing that counts most for each machine, on the published corpora of `data/`.
