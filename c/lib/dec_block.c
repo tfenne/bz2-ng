@@ -595,15 +595,12 @@ seg_done:
 		       pf))                                                \
 		dead |= 1u << (i);
 
-#define LANES_1(X) X(0)
-#define LANES_2(X) X(0) X(1)
-#define LANES_8(X) X(0) X(1) X(2) X(3) X(4) X(5) X(6) X(7)
-#define LANES_24(X)                                                       \
-	LANES_8(X)                                                        \
-	X(8)                                                              \
-	X(9)                                                              \
-	X(10) X(11) X(12) X(13) X(14) X(15) X(16) X(17) X(18) X(19) X(20) \
-		X(21) X(22) X(23)
+#define LANES_1(X)     X(0)
+#define LANES_2(X)     X(0) X(1)
+#define LANES_8(X)     X(0) X(1) X(2) X(3) X(4) X(5) X(6) X(7)
+#define LANES_8_15(X)  X(8) X(9) X(10) X(11) X(12) X(13) X(14) X(15)
+#define LANES_16_23(X) X(16) X(17) X(18) X(19) X(20) X(21) X(22) X(23)
+#define LANES_24(X)    LANES_8(X) LANES_8_15(X) LANES_16_23(X)
 
 /*
  * K lanes in lock step until one runs out of segments; returns the mask of
@@ -634,8 +631,8 @@ DEFINE_LOCKSTEP_REG(8)
  * lockstep_K for more lanes than there are registers for: the hot state
  * stays in its array.  clang unrolls the loop fully, and its code measured
  * faster on Graviton4 than the written-out steps.  gcc 13 does not honour
- * the pragma here, and a loop of one lane step per iteration runs up to 12%
- * slower on Zen 5 depending only on where it lands in the binary, so other
+ * the pragma here, and the loop of one lane step per iteration it leaves
+ * took 30% more cycles on Zen 5 in some placements than in others, so other
  * compilers get the 24 steps written out.
  */
 static forceinline u32
