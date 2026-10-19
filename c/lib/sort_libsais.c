@@ -61,6 +61,14 @@
  * taken over the first BZNG_REC_SAMPLE entries, the last of them counted as
  * L-type. Decided from the block alone, so a block always takes the same
  * path.
+ *
+ * The number of LMS positions is bounded first, in one pass with no
+ * dependency from entry to entry, which compilers vectorise. An LMS position
+ * i has Tr[i - 1] > Tr[i] <= Tr[i + 1], and every strict valley,
+ * Tr[i - 1] > Tr[i] < Tr[i + 1], is one; the two counts differ only by runs
+ * of equal names after a step down, and they settle the rule on every block
+ * of the corpora. Otherwise the positions are counted exactly, each entry's
+ * type following the next entry's through a run.
  */
 static int
 bzng_rec_repetitive(const s32 *Tr, s32 m, s32 names)
@@ -68,13 +76,25 @@ bzng_rec_repetitive(const s32 *Tr, s32 m, s32 names)
 	if ((s64)names * 8 > m)
 		return 0;
 	s32 len = m < BZNG_REC_SAMPLE ? m : BZNG_REC_SAMPLE;
+	s64 threshold = (s64)len * 21;
+	s32 valleys = 0, at_most = 0;
+	for (s32 i = 1; i < len - 1; i++) {
+		s32 down = Tr[i - 1] > Tr[i];
+		valleys += down & (Tr[i] < Tr[i + 1]);
+		at_most += down & (Tr[i] <= Tr[i + 1]);
+	}
+	if ((s64)valleys * 50 > threshold)
+		return 1;
+	if ((s64)at_most * 50 <= threshold)
+		return 0;
+
 	s32 lms = 0, s1 = 0;
 	for (s32 i = len - 2; i >= 0; i--) {
-		s32 s0 = (Tr[i] < Tr[i + 1]) | ((Tr[i] == Tr[i + 1]) & s1);
+		s32 s0 = Tr[i] == Tr[i + 1] ? s1 : Tr[i] < Tr[i + 1];
 		lms += s1 & (s0 ^ 1);
 		s1 = s0;
 	}
-	return (s64)lms * 50 > (s64)len * 21;
+	return (s64)lms * 50 > threshold;
 }
 
 /*
