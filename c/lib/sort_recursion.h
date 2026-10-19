@@ -165,6 +165,32 @@ bzng_rec_get_counts(const s32 *T, s32 *C, s32 n, s32 k)
 		++C[T[i]];
 }
 
+/*
+ * Symbol counts of T[0..n) over [0, k) into C, as get_counts, with the
+ * increments spread over C and three more tables in scratch[0..3k): a
+ * repetitive string increments one counter at nearby positions, and with a
+ * single table each such increment waits for the store of the one before.
+ */
+static void
+bzng_rec_get_counts4(const s32 *T, s32 *C, s32 *scratch, s32 n, s32 k)
+{
+	s32 *C1 = scratch, *C2 = scratch + k, *C3 = scratch + 2 * k;
+	s32 i;
+
+	memset(C, 0, (size_t)k * sizeof(s32));
+	memset(scratch, 0, 3 * (size_t)k * sizeof(s32));
+	for (i = 0; i + 4 <= n; i += 4) {
+		++C[T[i]];
+		++C1[T[i + 1]];
+		++C2[T[i + 2]];
+		++C3[T[i + 3]];
+	}
+	for (; i < n; ++i)
+		++C[T[i]];
+	for (i = 0; i < k; ++i)
+		C[i] += C1[i] + C2[i] + C3[i];
+}
+
 /* Bucket starts (end = 0) or ends (end = 1) from the counts C[0..k). */
 static void
 bzng_rec_get_buckets(const s32 *C, s32 *B, s32 k, int end)
@@ -502,7 +528,15 @@ bzng_rec_sais_reduce(const s32 *T, s32 *SA, s32 fs, s32 n, s32 k, s32 **Cp,
 	}
 	lmssort2 = !recount && (2 <= (n / k)) && (4 * k < fs);
 
-	bzng_rec_get_counts(T, C, n, k);
+	/*
+	 * SA[0..n) is free until it is cleared below, and C and B lie beyond
+	 * it, so a level with at least 8 entries per name counts with spare
+	 * tables there.
+	 */
+	if (8 <= n / k)
+		bzng_rec_get_counts4(T, C, SA, n, k);
+	else
+		bzng_rec_get_counts(T, C, n, k);
 	bzng_rec_get_buckets(C, B, k, 1);
 	memset(SA, 0, (size_t)n * sizeof(s32));
 	/*
