@@ -26,6 +26,26 @@ if(NOT CMAKE_C_COMPILER_ID)
           "cannot identify.")
 endif()
 
+# A cross build for Windows whose CMake target is left at the host's system
+# gets the host's rules: an ELF-style shared library with a version script
+# that matches none of the DLL's names, and, where CMake cannot then read the
+# compiler's pointer size, x86-64 kernels built without their instruction
+# sets. Both fail halfway through the build, so the mismatch is refused here.
+include(CheckCSourceCompiles)
+check_c_source_compiles("
+  #ifndef _WIN32
+  #error not Windows
+  #endif
+  int main(void) { return 0; }"
+  BZ2NG_COMPILER_TARGETS_WINDOWS)
+if(BZ2NG_COMPILER_TARGETS_WINDOWS AND NOT WIN32)
+  message(FATAL_ERROR
+          "The C compiler ${CMAKE_C_COMPILER} builds for Windows, but CMake is building for "
+          "${CMAKE_SYSTEM_NAME}. To cross-compile for Windows, configure a new build directory with "
+          "-DCMAKE_SYSTEM_NAME=Windows (and -DCMAKE_SYSTEM_PROCESSOR=i686 for 32-bit x86), or with a "
+          "toolchain file that sets them.")
+endif()
+
 option(BZ2NG_BUILD_SHARED "Build the shared library" ON)
 set(BZ2NG_SONAME "1.0" CACHE STRING "ELF shared-library SONAME version: 1.0 (upstream, Debian, Ubuntu) or 1 (Fedora, openSUSE)")
 set_property(CACHE BZ2NG_SONAME PROPERTY STRINGS "1.0" "1")
@@ -103,34 +123,35 @@ endif()
 
 # Architecture of the target, for the ISA-specific flags. The sources decide
 # from the compiler's own macros (lib/common_defs.h) whether to build a vector
-# tier, so the flags must follow the same answer. CMAKE_SYSTEM_PROCESSOR is
-# empty in a cross build whose toolchain does not set it and is not always
-# spelt as matched here; where it is not recognised the compiler is asked.
-if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64)$" AND CMAKE_SIZEOF_VOID_P EQUAL 8)
+# tier, so the flags follow the compiler's answer too. CMAKE_SYSTEM_PROCESSOR
+# cannot stand in for it: a cross build that names only the compiler leaves it
+# at the host's processor, and a toolchain file may leave it empty.
+check_c_source_compiles("
+  #if !defined(__x86_64__) && !(defined(_M_X64) && !defined(_M_ARM64EC))
+  #error not x86-64
+  #endif
+  int main(void) { return 0; }"
+  BZ2NG_COMPILER_TARGETS_X86_64)
+check_c_source_compiles("
+  #if !defined(__aarch64__) && !defined(_M_ARM64)
+  #error not AArch64
+  #endif
+  int main(void) { return 0; }"
+  BZ2NG_COMPILER_TARGETS_AARCH64)
+# Without the pointer size the flags cannot follow the sources' answer,
+# which builds the vector tiers wherever pointers are 8 bytes.
+if(BZ2NG_COMPILER_TARGETS_X86_64 AND NOT CMAKE_SIZEOF_VOID_P)
+  message(FATAL_ERROR
+          "CMake could not determine the pointer size of the C compiler ${CMAKE_C_COMPILER} (the configure "
+          "output says \"Detecting C compiler ABI info - failed\"). In a cross build, set CMAKE_SYSTEM_NAME "
+          "and CMAKE_SYSTEM_PROCESSOR for the target, or use a toolchain file that does.")
+endif()
+if(BZ2NG_COMPILER_TARGETS_X86_64 AND CMAKE_SIZEOF_VOID_P EQUAL 8)
   set(BZ2NG_ARCH x86_64)
-elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64|ARM64)$")
+elseif(BZ2NG_COMPILER_TARGETS_AARCH64)
   set(BZ2NG_ARCH aarch64)
 else()
-  include(CheckCSourceCompiles)
-  check_c_source_compiles("
-    #if !defined(__x86_64__) && !(defined(_M_X64) && !defined(_M_ARM64EC))
-    #error not x86-64
-    #endif
-    int main(void) { return 0; }"
-    BZ2NG_COMPILER_TARGETS_X86_64)
-  check_c_source_compiles("
-    #if !defined(__aarch64__) && !defined(_M_ARM64)
-    #error not AArch64
-    #endif
-    int main(void) { return 0; }"
-    BZ2NG_COMPILER_TARGETS_AARCH64)
-  if(BZ2NG_COMPILER_TARGETS_X86_64 AND CMAKE_SIZEOF_VOID_P EQUAL 8)
-    set(BZ2NG_ARCH x86_64)
-  elseif(BZ2NG_COMPILER_TARGETS_AARCH64)
-    set(BZ2NG_ARCH aarch64)
-  else()
-    set(BZ2NG_ARCH other)
-  endif()
+  set(BZ2NG_ARCH other)
 endif()
 if(APPLE AND CMAKE_OSX_ARCHITECTURES)
   list(LENGTH CMAKE_OSX_ARCHITECTURES _n_arch)

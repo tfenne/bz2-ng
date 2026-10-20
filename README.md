@@ -42,7 +42,7 @@ cmake --build c/build
 ctest --test-dir c/build
 ```
 
-The test suite takes a few minutes; it includes the differential testers against a reference libbz2 1.0.8 built from the unmodified sources in `c/test/reference/`, a memory-bound test with a counting allocator, every kernel tier, and bzip2's own tests through the `bzip2` program. With MSVC, configure with `-A x64` and build and test with `--config Release`. With MSYS2 or MinGW, pass `-DCMAKE_C_COMPILER=gcc` (or the mingw-w64 compiler's full name): CMake tries `cc` before `gcc`, and may pick one that it cannot identify, in which case configure stops.
+The test suite takes a few minutes; it includes the differential testers against a reference libbz2 1.0.8 built from the unmodified sources in `c/test/reference/`, a memory-bound test with a counting allocator, every kernel tier, and bzip2's own tests through the `bzip2` program. With MSVC, configure with `-A x64` and build and test with `--config Release`. With MSYS2 or MinGW, pass `-DCMAKE_C_COMPILER=gcc` (or the mingw-w64 compiler's full name): CMake tries `cc` before `gcc`, and may pick one that it cannot identify, in which case configure stops. To cross-compile for Windows from Linux with mingw-w64, also pass `-DCMAKE_SYSTEM_NAME=Windows`, with `-DCMAKE_SYSTEM_PROCESSOR=i686` for 32-bit x86, as CI does: without them CMake applies the host's rules to the Windows compiler, and configure stops.
 
 Build options (`-D` on the configure line):
 
