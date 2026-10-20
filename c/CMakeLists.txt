@@ -123,41 +123,35 @@ endif()
 
 # Architecture of the target, for the ISA-specific flags. The sources decide
 # from the compiler's own macros (lib/common_defs.h) whether to build a vector
-# tier, so the flags must follow the same answer. CMAKE_SYSTEM_PROCESSOR is
-# empty in a cross build whose toolchain does not set it and is not always
-# spelt as matched here; where it is not recognised the compiler is asked.
-if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64)$" AND CMAKE_SIZEOF_VOID_P EQUAL 8)
+# tier, so the flags follow the compiler's answer too. CMAKE_SYSTEM_PROCESSOR
+# cannot stand in for it: a cross build that names only the compiler leaves it
+# at the host's processor, and a toolchain file may leave it empty.
+check_c_source_compiles("
+  #if !defined(__x86_64__) && !(defined(_M_X64) && !defined(_M_ARM64EC))
+  #error not x86-64
+  #endif
+  int main(void) { return 0; }"
+  BZ2NG_COMPILER_TARGETS_X86_64)
+check_c_source_compiles("
+  #if !defined(__aarch64__) && !defined(_M_ARM64)
+  #error not AArch64
+  #endif
+  int main(void) { return 0; }"
+  BZ2NG_COMPILER_TARGETS_AARCH64)
+# Without the pointer size the flags cannot follow the sources' answer,
+# which builds the vector tiers wherever pointers are 8 bytes.
+if(BZ2NG_COMPILER_TARGETS_X86_64 AND NOT CMAKE_SIZEOF_VOID_P)
+  message(FATAL_ERROR
+          "CMake could not determine the pointer size of the C compiler ${CMAKE_C_COMPILER} (the configure "
+          "output says \"Detecting C compiler ABI info - failed\"). In a cross build, set CMAKE_SYSTEM_NAME "
+          "and CMAKE_SYSTEM_PROCESSOR for the target, or use a toolchain file that does.")
+endif()
+if(BZ2NG_COMPILER_TARGETS_X86_64 AND CMAKE_SIZEOF_VOID_P EQUAL 8)
   set(BZ2NG_ARCH x86_64)
-elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64|ARM64)$")
+elseif(BZ2NG_COMPILER_TARGETS_AARCH64)
   set(BZ2NG_ARCH aarch64)
 else()
-  check_c_source_compiles("
-    #if !defined(__x86_64__) && !(defined(_M_X64) && !defined(_M_ARM64EC))
-    #error not x86-64
-    #endif
-    int main(void) { return 0; }"
-    BZ2NG_COMPILER_TARGETS_X86_64)
-  check_c_source_compiles("
-    #if !defined(__aarch64__) && !defined(_M_ARM64)
-    #error not AArch64
-    #endif
-    int main(void) { return 0; }"
-    BZ2NG_COMPILER_TARGETS_AARCH64)
-  # Without the pointer size the flags cannot follow the sources' answer,
-  # which builds the vector tiers wherever pointers are 8 bytes.
-  if(BZ2NG_COMPILER_TARGETS_X86_64 AND NOT CMAKE_SIZEOF_VOID_P)
-    message(FATAL_ERROR
-            "CMake could not determine the pointer size of the C compiler ${CMAKE_C_COMPILER} (the configure "
-            "output says \"Detecting C compiler ABI info - failed\"). In a cross build, set CMAKE_SYSTEM_NAME "
-            "and CMAKE_SYSTEM_PROCESSOR for the target, or use a toolchain file that does.")
-  endif()
-  if(BZ2NG_COMPILER_TARGETS_X86_64 AND CMAKE_SIZEOF_VOID_P EQUAL 8)
-    set(BZ2NG_ARCH x86_64)
-  elseif(BZ2NG_COMPILER_TARGETS_AARCH64)
-    set(BZ2NG_ARCH aarch64)
-  else()
-    set(BZ2NG_ARCH other)
-  endif()
+  set(BZ2NG_ARCH other)
 endif()
 if(APPLE AND CMAKE_OSX_ARCHITECTURES)
   list(LENGTH CMAKE_OSX_ARCHITECTURES _n_arch)
