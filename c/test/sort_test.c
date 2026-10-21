@@ -399,20 +399,21 @@ zigzag(void)
 	family_end("zigzag");
 }
 
-/* Blocks at the edges of the conditions under which the sorter keeps the LMS
- * positions of its first pass for after the recursion, as a list (patch 0001
- * of third_party/libsais/patches) or as a bitmap (patch 0004). With the free
- * space bzng_bwt_work_ints(n) gives, floor(n/2), it keeps the list while
- * m <= (floor(n/2) + n) / 4 and the bitmap of b ints from there while
- * m <= (floor(n/2) - b + n) / 3; at either edge the first level of the
- * recursion has free space equal to its length, or up to three more. Types
+/* Blocks at the edge of the condition under which the sorter keeps the LMS
+ * positions of its first pass for after the recursion (patch 0001 of
+ * third_party/libsais/patches), and near the highest LMS density a block can
+ * have. With the free space bzng_bwt_work_ints(n) gives, floor(n/2), it keeps
+ * the positions while m <= (floor(n/2) + n) / 4, at which edge the first
+ * level of the recursion has free space equal to its length, or up to three
+ * more; at m = (floor(n/2) - n/32 + n) / 3, about 0.49 of the block, it finds
+ * them again and the first level has about n/32 more than its length. Types
  * run in periods of eight, SSLSSLSL (three LMS positions a period), with
  * single periods made SLSLSLSL (one more) or SSLSSSSL (one fewer) to reach
- * m = edge - 1, edge and edge + 1. Bytes are random over
- * most of their range and chosen right to left with strict inequalities, so
- * that the types hold exactly and most LMS substrings are distinct: the
- * recursion's alphabet is large. T[0] is the block's only 0, so the block is
- * its own least rotation and reaches the sorter unrotated. */
+ * m = edge - 1, edge and edge + 1. Bytes are random over most of their range
+ * and chosen right to left with strict inequalities, so that the types hold
+ * exactly and most LMS substrings are distinct: the recursion's alphabet is
+ * large. T[0] is the block's only 0, so the block is its own least rotation
+ * and reaches the sorter unrotated. */
 static uint8_t edge_types[MAX_N]; /* 1 = S */
 
 /* LMS positions of T[0..n) (T[n - 1] is L). */
@@ -467,23 +468,15 @@ edge_block(uint8_t *out, int32_t n, int32_t target)
 	out[0] = 0;
 }
 
-/* The ints of patch 0004's bitmap for n bytes (bzng_lms_bitmap_ints in
- * lib/sort_libsais.c). */
-static int32_t
-lms_bitmap_ints(int32_t n)
-{
-	return (n / WORDBITS + 1) * (WORDBYTES / 4);
-}
-
 static void
-lms_edge_family(const char *name, int bitmap)
+lms_edge_family(const char *name, int dense)
 {
 	family_begin();
 	int32_t lens[] = {1000, 4099, 65537, 300001, 900000};
 	for (size_t t = 0; t < sizeof lens / sizeof lens[0]; t++) {
 		int32_t n = lens[t];
-		int32_t edge = bitmap ? (n / 2 - lms_bitmap_ints(n) + n) / 3 :
-					(n / 2 + n) / 4;
+		int32_t edge =
+			dense ? (n / 2 - n / 32 + n) / 3 : (n / 2 + n) / 4;
 		if (quick && n > 100000)
 			continue;
 		for (int32_t target = edge - 1; target <= edge + 1; target++) {
@@ -503,13 +496,13 @@ static void
 lms_edge(void)
 {
 	lms_edge_family("lms_edge", 0);
-	lms_edge_family("lms_bitmap_edge", 1);
+	lms_edge_family("lms_dense", 1);
 }
 
 /* CIGAR-like strings, as in CRAM's MC:Z tags: mostly one string repeated,
  * the rest drawn from a few hundred, each followed by a NUL. About 0.39 of
- * the positions are LMS positions, between patch 0001's edge (3/8) and
- * patch 0004's, so that these blocks keep the bitmap. */
+ * the positions are LMS positions, above patch 0001's edge (3/8), so that
+ * these blocks find the positions again. */
 static void
 mc_like(void)
 {

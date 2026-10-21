@@ -350,14 +350,6 @@ foreach(_src IN LISTS BZ2NG_O3_SOURCES)
     set_source_files_properties(${_src} PROPERTIES COMPILE_OPTIONS "${_opts}")
   endif()
 endforeach()
-# gcc's first scheduling pass on AArch64 moves a prefetch in libsais's final
-# induction scans above the test that guards it, since a prefetch cannot trap.
-# It then also runs for marked entries, at addresses gigabytes outside the
-# arrays, and Arm cores stall on each of those for tens of nanoseconds,
-# costing a third of the sorter's speed.
-if(CMAKE_C_COMPILER_ID STREQUAL "GNU" AND BZ2NG_ARCH STREQUAL "aarch64")
-  set_property(SOURCE lib/sort_libsais.c APPEND PROPERTY COMPILE_OPTIONS -fno-sched-spec)
-endif()
 # libbz2's own code in bzlib.c has an unused parameter (BZ2_bzflush), and
 # for cl also stores fread's and fwrite's size_t results in its Int32s.
 if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
