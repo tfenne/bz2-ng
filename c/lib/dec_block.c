@@ -318,6 +318,156 @@ load3(const u8 *p3, u32 j)
 #define PART_PUT(k)  tt[cf[k][c##k]++] = PART_ROW(k) << 8 | c##k;
 #define PART_PUT3(k) store3w(p3, cf[k][L[i + (k) * q]]++, PART_ROW(k));
 
+#ifdef ARCH_ARM64
+/*
+ * Runs, on AArch64.  L is mostly runs of one symbol, and when the RUN_ROWS
+ * symbols of one of a part's groups (its rows 0-15, 16-31, ...) are all c,
+ * their entries go to the RUN_ROWS consecutive rows at the part's cursor
+ * for c, with consecutive row numbers: one sequential run of stores instead
+ * of RUN_ROWS scattered ones, and one cursor update.  The scatter takes each
+ * half's rows RUN_ROWS at a time and stores the uniform parts of such a group
+ * as runs, then scatters the mixed parts row by row, interleaved.  A part's
+ * state holds for the whole group, so the branches on it are predictable
+ * within the group, and it mostly lasts for several groups.
+ *
+ * Other targets scatter row by row: on x86-64 the test for a run costs mixed
+ * data more than MC:Z gains (spec section 4.4 has the measurements).
+ */
+#  define RUN_ROWS 16u
+
+/* Nonzero unless the RUN_ROWS bytes at p are all equal. */
+static forceinline u64
+mixed16(const u8 *p)
+{
+	const u64 a = load_u64_unaligned(p), b = load_u64_unaligned(p + 8);
+
+	return (a ^ b) | (a ^ (a >> 8 | a << 56));
+}
+
+/* Repeats X(t) for t = 0..15, the rows of a run. */
+#  define RUN_8(X)	X(0) X(1) X(2) X(3) X(4) X(5) X(6) X(7)
+#  define RUN_16(X)	RUN_8(X) X(8) X(9) X(10) X(11) X(12) X(13) X(14) X(15)
+#  define RUN_STORE4(t) tt[t] = e + ((u32)(t) << 8);
+
+/* 4-byte entries e, e + (1 << 8), ..., e + (15 << 8) at tt[0..16). */
+static forceinline void
+put_run4(u32 *tt, u32 e)
+{
+	RUN_16(RUN_STORE4)
+}
+
+/*
+ * 3-byte entries v, v + 1, ..., v + 15 as entries j..j + 15.  While v's low
+ * byte does not carry, the 48 bytes are v's three bytes repeated, which
+ * repeat every three 64-bit words, plus t in entry t's low byte; otherwise
+ * entry by entry like the scatter.
+ */
+static forceinline void
+put_run3(u8 *p3, u32 j, u32 v)
+{
+	u8 *p = p3 + 3 * (size_t)j;
+
+	if (likely((v & 0xFF) <= 0xFF - (RUN_ROWS - 1))) {
+		const u64 x = v;
+		const u64 w0 = x | x << 24 | x << 48;
+		const u64 w1 = x >> 16 | x << 8 | x << 32 | x << 56;
+		const u64 w2 = x >> 8 | x << 16 | x << 40;
+
+		put_unaligned_le64(w0 + (1ull << 24 | 2ull << 48), p);
+		put_unaligned_le64(w1 + (3ull << 8 | 4ull << 32 | 5ull << 56),
+				   p + 8);
+		put_unaligned_le64(w2 + (6ull << 16 | 7ull << 40), p + 16);
+		put_unaligned_le64(w0 + (8ull | 9ull << 24 | 10ull << 48),
+				   p + 24);
+		put_unaligned_le64(
+			w1 + (11ull << 8 | 12ull << 32 | 13ull << 56), p + 32);
+		put_unaligned_le64(w2 + (14ull << 16 | 15ull << 40), p + 40);
+	} else {
+		for (u32 t = 0; t < RUN_ROWS; t++)
+			store3w(p3, j + t, v + t);
+	}
+}
+
+/* Bit k & 3 of a group's mask m: part k's RUN_ROWS symbols are mixed. */
+#  define PART_MIXED_BIT(k) (u32)(mixed16(L + i + (k) * q) != 0) << ((k) & 3) |
+#  define PART_IS_MIXED(k)  (m & 1u << ((k) & 3))
+/* Stores part k's group as a run if it is uniform. */
+#  define PART_RUN4(k)                                        \
+	  if (!PART_IS_MIXED(k)) {                            \
+		  const u32 c = L[i + (k) * q], j = cf[k][c]; \
+		  put_run4(tt + j, PART_ROW(k) << 8 | c);     \
+		  cf[k][c] = j + RUN_ROWS;                    \
+	  }
+#  define PART_RUN3(k)                                        \
+	  if (!PART_IS_MIXED(k)) {                            \
+		  const u32 c = L[i + (k) * q], j = cf[k][c]; \
+		  put_run3(p3, j, PART_ROW(k));               \
+		  cf[k][c] = j + RUN_ROWS;                    \
+	  }
+/*
+ * Scatters row i of part k if its group is mixed.  The post-increment form
+ * serves both compilers here: loading every part's cursor before the stores,
+ * as BODY4 does for clang, would load the uniform parts' cursors too, and
+ * measured slower.
+ */
+#  define PART_MIXED_PUT4(k)                             \
+	  if (PART_IS_MIXED(k)) {                        \
+		  const u32 c = L[i + (k) * q];          \
+		  tt[cf[k][c]++] = PART_ROW(k) << 8 | c; \
+	  }
+#  define PART_MIXED_PUT3(k)      \
+	  if (PART_IS_MIXED(k)) { \
+		  PART_PUT3(k)    \
+	  }
+
+/*
+ * One half's scatter: groups of RUN_ROWS rows of each of its four parts
+ * (PARTS), uniform parts stored by RUN and mixed ones row by row by PUT; the
+ * rows after the last whole group by BODY.
+ */
+#  define SCATTER_HALF(PARTS, RUN, PUT, BODY)                            \
+	  {                                                              \
+		  u32 i = 0;                                             \
+		  while (i + RUN_ROWS <= q) {                            \
+			  const u32 m = PARTS(PART_MIXED_BIT) 0;         \
+			  PARTS(RUN)                                     \
+			  if (m == 0) {                                  \
+				  i += RUN_ROWS;                         \
+				  continue;                              \
+			  }                                              \
+			  for (const u32 e = i + RUN_ROWS; i < e; i++) { \
+				  PARTS(PUT)                             \
+			  }                                              \
+		  }                                                      \
+		  for (; i < q; i++) {                                   \
+			  BODY(PARTS)                                    \
+		  }                                                      \
+	  }
+#else
+/* One half's scatter, row by row by BODY (RUN and PUT are not used). */
+#  define SCATTER_HALF(PARTS, RUN, PUT, BODY) \
+	  for (u32 i = 0; i < q; i++) {       \
+		  BODY(PARTS)                 \
+	  }
+#endif /* ARCH_ARM64 */
+
+/*
+ * Each part has its own cursors, so all the cursors of an iteration are
+ * loaded before any entry is stored, and each entry is then stored before its
+ * cursor: with clang that order decodes repetitive data markedly faster on
+ * Granite Rapids (spec D7 has the measurement). The cursors never escape, so
+ * the compiler may reorder these accesses; clang keeps the order written
+ * here. gcc gets the post-increment form, which it compiles to tighter code
+ * that still stores each entry before its cursor as long as every part is
+ * named by a constant.
+ */
+#if GCC_PREREQ(1, 0)
+#  define BODY4(PARTS) PARTS(PART_SYM) PARTS(PART_PUT)
+#else
+#  define BODY4(PARTS) PARTS(PART_SYM) PARTS(PART_CUR) PARTS(PART_STORE)
+#endif
+#define BODY3(PARTS) PARTS(PART_PUT3)
+
 /*
  * Builds the T table from L (T(LF(i)) = i), BUILD_PARTS parts with cursors of
  * their own. fit: 3-byte entries holding the 20-bit pointer; otherwise 4-byte
@@ -336,15 +486,12 @@ build_t(bzng_dstate *s, u32 n, int fit)
 		 * One 4-byte store per entry: it also zeroes the low byte of
 		 * the next entry, which within a (part, symbol) cursor range
 		 * is written later anyway; the first entry of each range is
-		 * repaired below.
+		 * repaired below.  On AArch64 a run's packed stores write its
+		 * 48 bytes exactly.
 		 */
 		u8 *p3 = s->tbl;
-		for (u32 i = 0; i < q; i++) {
-			PARTS_LO(PART_PUT3)
-		}
-		for (u32 i = 0; i < q; i++) {
-			PARTS_HI(PART_PUT3)
-		}
+		SCATTER_HALF(PARTS_LO, PART_RUN3, PART_MIXED_PUT3, BODY3)
+		SCATTER_HALF(PARTS_HI, PART_RUN3, PART_MIXED_PUT3, BODY3)
 		for (u32 i = BUILD_PARTS * q; i < n; i++)
 			store3w(p3, cf[BUILD_PARTS - 1][L[i]]++, i);
 		/*
@@ -372,36 +519,8 @@ build_t(bzng_dstate *s, u32 n, int fit)
 		}
 	} else {
 		u32 *tt = (u32 *)(void *)s->tbl;
-		/*
-		 * Each part has its own cursors, so all the cursors of an
-		 * iteration are loaded before any entry is stored, and each
-		 * entry is then stored before its cursor: with clang that order
-		 * decodes repetitive data markedly faster on Granite Rapids
-		 * (spec D7 has the measurement). The cursors never escape, so
-		 * the compiler may reorder these accesses; clang keeps the
-		 * order written here. gcc gets the post-increment form, which
-		 * it compiles to tighter code that still stores each entry
-		 * before its cursor as long as every part is named by a
-		 * constant.
-		 */
-		for (u32 i = 0; i < q; i++) {
-			PARTS_LO(PART_SYM)
-#if GCC_PREREQ(1, 0)
-			PARTS_LO(PART_PUT)
-#else
-			PARTS_LO(PART_CUR)
-			PARTS_LO(PART_STORE)
-#endif
-		}
-		for (u32 i = 0; i < q; i++) {
-			PARTS_HI(PART_SYM)
-#if GCC_PREREQ(1, 0)
-			PARTS_HI(PART_PUT)
-#else
-			PARTS_HI(PART_CUR)
-			PARTS_HI(PART_STORE)
-#endif
-		}
+		SCATTER_HALF(PARTS_LO, PART_RUN4, PART_MIXED_PUT4, BODY4)
+		SCATTER_HALF(PARTS_HI, PART_RUN4, PART_MIXED_PUT4, BODY4)
 		for (u32 i = BUILD_PARTS * q; i < n; i++) {
 			const u32 c = L[i];
 			tt[cf[BUILD_PARTS - 1][c]++] = i << 8 | c;
