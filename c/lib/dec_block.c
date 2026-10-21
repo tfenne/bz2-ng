@@ -593,13 +593,16 @@ mark_splitters(bzng_dstate *s, u32 n, int fit)
 }
 
 /*
- * A lane's row and write position, the state every step reads and writes.
- * The write position is an offset into the pool and always names a writable
- * byte: a lane takes its next chunk as soon as its current one is full.
+ * A lane's row and its place in the pool.  From lane_start() to lock step,
+ * and from batch_out() to stragglers(), o is the pool offset of the lane's
+ * next byte and names a writable byte: a full chunk has been replaced.  The
+ * lock-step loops leave o alone and keep every lane's next byte at a shared
+ * offset of its chunk, replacing full chunks at the end of a round, and in
+ * stragglers() o holds the start of the lane's chunk.
  */
 typedef struct {
 	u32 p; /* current row */
-	u32 o; /* pool offset of the next byte */
+	u32 o; /* next byte's pool offset, or in stragglers() its chunk's */
 } walk_hot;
 
 /* The rest of a lane's state, which only segment and chunk ends touch. */
@@ -639,30 +642,33 @@ take_chunk(walk_pool *w, walk_cold *c, u32 full)
 	return k * BZNG_CHUNK;
 }
 
-/* Writes one byte at a lane's write position *o and advances it. */
-static forceinline void
-lane_put(walk_pool *w, walk_cold *c, u8 *pool, u32 *o, u8 sym)
-{
-	pool[*o] = sym;
-	if (unlikely(++*o % BZNG_CHUNK == 0))
-		*o = take_chunk(w, c, *o);
-}
-
 /*
  * Starts segment `seg` on a lane whose next byte goes to pool offset o:
- * records where the segment's bytes begin, emits the splitter row's own byte
- * and returns the lane's successor row and write position.  They are
- * returned by value so that no pointer to a lane's locals leaves the step.
+ * records where the segment's bytes begin and returns its splitter row,
+ * whose own byte the caller writes at o.
  */
-static walk_hot
-seg_begin(bzng_dstate *s, walk_pool *w, walk_cold *c, u8 *pool, u32 o, u32 seg,
-	  int fit)
+static inline u32
+seg_open(bzng_dstate *s, walk_cold *c, u32 o, u32 seg)
 {
-	walk_hot h;
 	s->seg_start[seg] = o;
 	c->seg = seg;
 	c->mark = c->written + o % BZNG_CHUNK;
-	const u32 row = s->seg_row[seg];
+	return s->seg_row[seg];
+}
+
+/*
+ * Starts a lane on the next segment in a chunk of its own: emits the
+ * splitter row's byte at the chunk's start and returns the lane's successor
+ * row and write position, by value so that no pointer to a lane's locals
+ * leaves the walk.
+ */
+static walk_hot
+lane_start(bzng_dstate *s, walk_pool *w, walk_cold *c, u8 *pool, int fit)
+{
+	walk_hot h;
+	const u32 o = first_chunk(w);
+	c->written = 0;
+	const u32 row = seg_open(s, c, o, w->next_split++);
 	u8 sym;
 	if (fit) {
 		sym = row_symbol(s, row);
@@ -672,8 +678,8 @@ seg_begin(bzng_dstate *s, walk_pool *w, walk_cold *c, u8 *pool, u32 o, u32 seg,
 		sym = (u8)e;
 		h.p = (e >> 8) & PMASK;
 	}
-	h.o = o;
-	lane_put(w, c, pool, &h.o, sym);
+	pool[o] = sym;
+	h.o = o + 1;
 	return h;
 }
 
@@ -688,56 +694,85 @@ seg_end(bzng_dstate *s, const walk_cold *c, u32 p, u32 o)
 	s->seg_next[c->seg] = seg_index(s, p);
 }
 
+/* No row: the lane has no segment left. */
+#define NO_ROW 0xFFFFFFFFu
+
 /*
- * One step of a lane: emits the current row's F byte and follows T, or ends
- * the segment at a marked row. Returns 0 when the lane has nothing left.
- * The lane's row and write position come by pointer so that the lock-step
- * loops can keep them in locals.  tbl, pool and fsh are the walk's copies of
+ * Ends a lane's segment at the marked row p, with the lane's next byte due at
+ * pool offset o, and starts the next segment there: returns that segment's
+ * splitter row, whose byte the caller writes at o, or NO_ROW if every segment
+ * has been started.
+ */
+static u32
+seg_turn(bzng_dstate *s, walk_pool *w, walk_cold *c, u32 p, u32 o)
+{
+	seg_end(s, c, p, o);
+	if (w->next_split == s->n_seg)
+		return NO_ROW;
+	return seg_open(s, c, o, w->next_split++);
+}
+
+/*
+ * Every live lane writes one byte per step, a step that ends a segment
+ * included (the next segment's splitter row emits in place of the marked
+ * row).  lane_start() takes the lanes' first chunks in lane order and writes
+ * each lane's splitter byte at offset 0 of its chunk, so lock step starts with
+ * every lane's next byte at offset 1.  The lanes therefore fill their chunks
+ * together and take the next ones together: in lock step lane k's chunk is
+ * always g + k for a shared g, and its next byte goes to offset j of it for a
+ * shared j.  A step then needs no write position of its own and no chunk-end
+ * test; the loops test j once per round of steps.
+ */
+
+/*
+ * One step of a lane: emits the current row's F byte at dst and follows T,
+ * or at a marked row ends the segment and starts the next one, emitting its
+ * splitter row's byte at dst instead.  Returns 0, having written nothing,
+ * when the lane has no segment left.  dst is pool offset dst - pool; the step
+ * never takes a chunk.  The lane's row comes by pointer so that the lock-step
+ * loops can keep it in a local.  tbl, pool and fsh are the walk's copies of
  * s->tbl, s->L and s->fsym_shift: the pool's byte stores may alias the
  * state, so reading s would reload them on every step.
  * pf: prefetch the next row's table entry as soon as its index is known.
  */
 static forceinline int
-lane_step(bzng_dstate *s, walk_pool *w, walk_cold *c, u32 *p, u32 *o,
+lane_step(bzng_dstate *s, walk_pool *w, walk_cold *c, u32 *p, u8 *dst,
 	  const u8 *tbl, u8 *pool, u32 fsh, int fit, int pf)
 {
-	u32 e, next;
+	u32 row = *p, e;
 	u8 sym;
 	if (fit) {
-		e = load3(tbl, *p);
+		e = load3(tbl, row);
 		if (unlikely(e & (SPLIT3 | GUESS3))) {
-			if (e & SPLIT3)
-				goto seg_done;
-			sym = row_symbol(s, *p);
+			if (e & SPLIT3) {
+				row = seg_turn(s, w, c, row, (u32)(dst - pool));
+				if (row == NO_ROW)
+					return 0;
+				e = load3(tbl, row);
+			}
+			sym = row_symbol(s, row);
 		} else {
 			const u8 *const guess = guess_table_r(s);
 
-			sym = guess[*p >> fsh];
+			sym = guess[row >> fsh];
 		}
-		next = e & PMASK;
 	} else {
-		e = ((const u32 *)(const void *)tbl)[*p];
-		if (unlikely(e & 0x80000000u))
-			goto seg_done;
+		e = ((const u32 *)(const void *)tbl)[row];
+		if (unlikely(e & 0x80000000u)) {
+			row = seg_turn(s, w, c, row, (u32)(dst - pool));
+			if (row == NO_ROW)
+				return 0;
+			e = ((const u32 *)(const void *)tbl)[row];
+		}
 		sym = (u8)e;
-		next = (e >> 8) & PMASK;
 	}
+	const u32 next = fit ? e & PMASK : (e >> 8) & PMASK;
 	if (pf)
 		prefetchr(fit ? tbl + 3 * (size_t)next :
 				tbl + 4 * (size_t)next);
 	*p = next;
-	lane_put(w, c, pool, o, sym);
+	*dst = sym;
 	return 1;
-seg_done:
-	seg_end(s, c, *p, *o);
-	if (w->next_split < s->n_seg) {
-		const walk_hot h =
-			seg_begin(s, w, c, pool, *o, w->next_split++, fit);
-		*p = h.p;
-		*o = h.o;
-		return 1;
-	}
-	return 0;
 }
 
 /*
@@ -747,17 +782,66 @@ seg_done:
  */
 #define PREFETCH_MIN_LANES 16
 
-/* Lane i's hot state in locals of its own, one step of it, and back. */
-#define LANE_IN(i)  u32 p##i = h[i].p, o##i = h[i].o;
-#define LANE_OUT(i) h[i].p = p##i, h[i].o = o##i;
+/*
+ * Lock step's shared chunk and offset, from the write positions of K lanes
+ * that have just started their first segments.
+ */
+static forceinline void
+batch_in(const walk_pool *w, const walk_hot *h, u32 K, u32 *g, u32 *j)
+{
+	*g = h[0].o / BZNG_CHUNK;
+	*j = h[0].o % BZNG_CHUNK;
+#ifdef BZNG_ENABLE_ASSERTIONS
+	for (u32 k = 0; k < K; k++)
+		ASSERT(h[k].o == (*g + k) * BZNG_CHUNK + *j);
+	ASSERT(w->next_chunk == *g + K);
+#else
+	(void)w;
+	(void)K;
+#endif
+}
+
+/*
+ * Takes the next chunk for each of K lanes, in lane order, when their chunks
+ * g .. g + K - 1 are all full: lane k's next chunk is then g + K + k.
+ */
+static forceinline void
+take_chunks(walk_pool *w, walk_cold *c, u32 K, u32 g)
+{
+	ASSERT(w->next_chunk == g + K);
+	for (u32 k = 0; k < K; k++)
+		take_chunk(w, &c[k], (g + k + 1) * BZNG_CHUNK);
+}
+
+/*
+ * Ends lock step after the round in which the lanes in `dead` ran out: gives
+ * every other lane its write position, offset j of chunk g + k, taking its
+ * next chunk first, in lane order, if that round filled its chunk.
+ */
+static forceinline void
+batch_out(walk_pool *w, walk_hot *h, walk_cold *c, u32 K, u32 g, u32 j,
+	  u32 dead)
+{
+	for (u32 k = 0; k < K; k++) {
+		if ((dead >> k) & 1)
+			continue;
+		const u32 o = (g + k) * BZNG_CHUNK + j;
+		h[k].o = j == BZNG_CHUNK ? take_chunk(w, &c[k], o) : o;
+	}
+}
+
+/* Lane i's row in a local of its own, one step of it, and back. */
+#define LANE_IN(i)  u32 p##i = h[i].p;
+#define LANE_OUT(i) h[i].p = p##i;
 #define LANE_STEP(i)                                                        \
-	if (!lane_step(s, w, &c[i], &p##i, &o##i, tbl, pool, fsh, fit, pf)) \
+	if (!lane_step(s, w, &c[i], &p##i, q + (i) * BZNG_CHUNK, tbl, pool, \
+		       fsh, fit, pf))                                       \
 		dead |= 1u << (i);
 
-/* One step of lane i with its hot state left in the array. */
-#define LANE_STEP_MEM(i)                                                   \
-	if (!lane_step(s, w, &c[i], &h[i].p, &h[i].o, tbl, pool, fsh, fit, \
-		       pf))                                                \
+/* One step of lane i with its row left in the array. */
+#define LANE_STEP_MEM(i)                                                      \
+	if (!lane_step(s, w, &c[i], &h[i].p, q + (i) * BZNG_CHUNK, tbl, pool, \
+		       fsh, fit, pf))                                         \
 		dead |= 1u << (i);
 
 #define LANES_1(X)     X(0)
@@ -769,22 +853,32 @@ seg_done:
 
 /*
  * K lanes in lock step until one runs out of segments; returns the mask of
- * the lanes that have. Each lane's row and write position are copied into
- * locals of their own for the loop so that the compiler can keep them in
- * registers: the array, which the other phases index by variable, stays in
- * memory.
+ * the lanes that have. Each lane's row is copied into a local of its own for
+ * the loop so that the compiler can keep it in a register: the array, which
+ * the other phases index by variable, stays in memory.
  */
 #define DEFINE_LOCKSTEP_REG(K)                                           \
 	static forceinline u32 lockstep_##K(                             \
 		bzng_dstate *s, walk_pool *w, walk_hot *h, walk_cold *c, \
 		const u8 *tbl, u8 *pool, u32 fsh, int fit, int pf)       \
 	{                                                                \
-		u32 dead = 0;                                            \
+		u32 dead = 0, g, j;                                      \
+		batch_in(w, h, (K), &g, &j);                             \
 		LANES_##K(LANE_IN);                                      \
-		do {                                                     \
-			LANES_##K(LANE_STEP)                             \
-		} while (!dead);                                         \
+		for (;;) {                                               \
+			u8 *const q = pool + (size_t)g * BZNG_CHUNK + j; \
+			LANES_##K(LANE_STEP);                            \
+			j++;                                             \
+			if (dead)                                        \
+				break;                                   \
+			if (j == BZNG_CHUNK) {                           \
+				take_chunks(w, c, (K), g);               \
+				g += (K);                                \
+				j = 0;                                   \
+			}                                                \
+		}                                                        \
 		LANES_##K(LANE_OUT);                                     \
+		batch_out(w, h, c, (K), g, j, dead);                     \
 		return dead;                                             \
 	}
 
@@ -793,30 +887,81 @@ DEFINE_LOCKSTEP_REG(2)
 DEFINE_LOCKSTEP_REG(8)
 
 /*
- * lockstep_K for more lanes than there are registers for: the hot state
- * stays in its array.  clang unrolls the loop fully, and its code measured
- * faster on Graviton4 than the written-out steps.  gcc 13 does not honour
- * the pragma here, and the loop of one lane step per iteration it leaves
- * took 30% more cycles on Zen 5 in some placements than in others, so other
- * compilers get the 24 steps written out.
+ * lockstep_K for more lanes than there are registers for: the rows stay in
+ * their array.  clang unrolls the loop fully; its code measured faster on
+ * Graviton4 than the written-out steps when each step kept a write position
+ * of its own, and the two have not been compared since.  gcc 13 does not
+ * honour the pragma here, and the loop of one lane step per iteration it
+ * leaves took 30% more cycles on Zen 5 in some placements than in others, so
+ * other compilers get the 24 steps written out.
  */
 static forceinline u32
 lockstep_24(bzng_dstate *s, walk_pool *w, walk_hot *h, walk_cold *c,
 	    const u8 *tbl, u8 *pool, u32 fsh, int fit, int pf)
 {
-	u32 dead = 0;
+	u32 dead = 0, g, j;
+	batch_in(w, h, 24, &g, &j);
+	for (;;) {
+		u8 *const q = pool + (size_t)g * BZNG_CHUNK + j;
 #if defined(__clang__)
-	while (!dead) {
 		UNROLL_FULL
 		for (int k = 0; k < 24; k++)
 			LANE_STEP_MEM(k)
-	}
 #else
-	do {
 		LANES_24(LANE_STEP_MEM)
-	} while (!dead);
 #endif
+		j++;
+		if (dead)
+			break;
+		if (j == BZNG_CHUNK) {
+			take_chunks(w, c, 24, g);
+			g += 24;
+			j = 0;
+		}
+	}
+	batch_out(w, h, c, 24, g, j, dead);
 	return dead;
+}
+
+/*
+ * Walks the `active` lanes left when lock step ends to their ends.  They are
+ * still in step: every pass steps each live lane once, so they share the
+ * offset j of their next bytes and fill their chunks in the same pass.  From
+ * here h[k].o holds the start of lane k's chunk.  A lane that runs out is
+ * replaced by the last, which is stepped in its place, so the lanes stay in
+ * the order they were stepped in, the order in which a pass that fills their
+ * chunks takes the next ones.
+ */
+static forceinline void
+stragglers(bzng_dstate *s, walk_pool *w, walk_hot *h, walk_cold *c, u32 active,
+	   const u8 *tbl, u8 *pool, u32 fsh, int fit, int pf)
+{
+	if (active == 0)
+		return;
+	u32 j = h[0].o % BZNG_CHUNK;
+	for (u32 k = 0; k < active; k++) {
+		ASSERT(h[k].o % BZNG_CHUNK == j);
+		h[k].o -= j;
+	}
+	for (;;) {
+		for (u32 k = 0; k < active; k++) {
+			if (!lane_step(s, w, &c[k], &h[k].p, pool + h[k].o + j,
+				       tbl, pool, fsh, fit, pf)) {
+				active--;
+				h[k] = h[active];
+				c[k] = c[active];
+				k--;
+			}
+		}
+		if (active == 0)
+			return;
+		if (++j == BZNG_CHUNK) {
+			for (u32 k = 0; k < active; k++)
+				h[k].o = take_chunk(w, &c[k],
+						    h[k].o + BZNG_CHUNK);
+			j = 0;
+		}
+	}
 }
 
 /*
@@ -825,47 +970,34 @@ lockstep_24(bzng_dstate *s, walk_pool *w, walk_hot *h, walk_cold *c,
  * exact prefix sum of the symbols written, so no step needs a bounds check
  * and every segment ends at a marked row.
  */
-#define DEFINE_WALK(K, FIT)                                                    \
-	static void walk_##K##_##FIT(bzng_dstate *s, walk_pool *w)             \
-	{                                                                      \
-		const int fit = (FIT), pf = (K) >= PREFETCH_MIN_LANES;         \
-		const u8 *const tbl = s->tbl;                                  \
-		u8 *const pool = w->pool;                                      \
-		const u32 fsh = fit ? s->fsym_shift : 0;                       \
-		walk_hot h[K];                                                 \
-		walk_cold c[K];                                                \
-		u32 active = 0;                                                \
-		while (active < (K) && w->next_split < s->n_seg) {             \
-			c[active].written = 0;                                 \
-			h[active] = seg_begin(s, w, &c[active], pool,          \
-					      first_chunk(w), w->next_split++, \
-					      fit);                            \
-			active++;                                              \
-		}                                                              \
-		if (active == (K)) {                                           \
-			const u32 dead = lockstep_##K(s, w, h, c, tbl, pool,   \
-						      fsh, fit, pf);           \
-			u32 a = 0;                                             \
-			for (int k = 0; k < (K); k++) {                        \
-				if (!((dead >> k) & 1)) {                      \
-					h[a] = h[k];                           \
-					c[a] = c[k];                           \
-					a++;                                   \
-				}                                              \
-			}                                                      \
-			active = a;                                            \
-		}                                                              \
-		while (active > 0) {                                           \
-			for (u32 k = 0; k < active; k++) {                     \
-				if (!lane_step(s, w, &c[k], &h[k].p, &h[k].o,  \
-					       tbl, pool, fsh, fit, pf)) {     \
-					active--;                              \
-					h[k] = h[active];                      \
-					c[k] = c[active];                      \
-					k--;                                   \
-				}                                              \
-			}                                                      \
-		}                                                              \
+#define DEFINE_WALK(K, FIT)                                                  \
+	static void walk_##K##_##FIT(bzng_dstate *s, walk_pool *w)           \
+	{                                                                    \
+		const int fit = (FIT), pf = (K) >= PREFETCH_MIN_LANES;       \
+		const u8 *const tbl = s->tbl;                                \
+		u8 *const pool = w->pool;                                    \
+		const u32 fsh = fit ? s->fsym_shift : 0;                     \
+		walk_hot h[K];                                               \
+		walk_cold c[K];                                              \
+		u32 active = 0;                                              \
+		while (active < (K) && w->next_split < s->n_seg) {           \
+			h[active] = lane_start(s, w, &c[active], pool, fit); \
+			active++;                                            \
+		}                                                            \
+		if (active == (K)) {                                         \
+			const u32 dead = lockstep_##K(s, w, h, c, tbl, pool, \
+						      fsh, fit, pf);         \
+			u32 a = 0;                                           \
+			for (int k = 0; k < (K); k++) {                      \
+				if (!((dead >> k) & 1)) {                    \
+					h[a] = h[k];                         \
+					c[a] = c[k];                         \
+					a++;                                 \
+				}                                            \
+			}                                                    \
+			active = a;                                          \
+		}                                                            \
+		stragglers(s, w, h, c, active, tbl, pool, fsh, fit, pf);     \
 	}
 
 DEFINE_WALK(1, 0)
