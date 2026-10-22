@@ -3,7 +3,7 @@
  *
  * Part of bz2-ng; MIT licence (see LICENSE). This file compiles libsais
  * (third_party/libsais/, by Ilya Grebnov), which is licensed under
- * Apache-2.0 WITH LLVM-exception: see licenses/libsais-1a696e6.txt, and
+ * Apache-2.0 WITH LLVM-exception: see licenses/libsais-2.12.0.txt, and
  * sort_recursion.h, derived from Yuta Mori's sais-lite (MIT): see
  * licenses/sais-lite-2.4.1.txt.
  */
@@ -21,12 +21,12 @@
  * Following the free space down the recursion shows that free space of at
  * least floor(n/2) - 2 at the top rules that out for every input of length n
  * (docs/spec.md section 4.3): each level's free space minus its length never
- * decreases, and its alphabet is smaller than its length. Patches 0001 and
- * 0004 keep the LMS positions in that free space, as a list or as a bitmap,
- * only where what they leave the recursion satisfies the same argument, and
- * patch 0003's recursion for repetitive blocks (sort_recursion.h) needs at
- * each level only free space for the level's alphabet, which it has at every
- * level given the free space libsais gives its own recursion (see that file).
+ * decreases, and its alphabet is smaller than its length. Patch 0001 keeps
+ * the LMS positions in that free space only where what it leaves the
+ * recursion satisfies the same argument, and patch 0003's recursion for
+ * repetitive blocks (sort_recursion.h) needs at each level only free space
+ * for the level's alphabet, which it has at every level given the free space
+ * libsais gives its own recursion (see that file).
  * The work array leaves at least floor(n/2). libsais's malloc returns NULL
  * here, so if that bound were ever wrong a sort would fail with an internal
  * error instead of allocating behind the caller's bzalloc.
@@ -98,97 +98,6 @@ bzng_rec_repetitive(const s32 *Tr, s32 m, s32 names)
 }
 
 /*
- * Ints of the bitmap of the LMS positions of a block of n bytes that patch
- * 0004 keeps through the recursion where patch 0001's list does not fit: a
- * bit per position, in whole machine words.
- */
-static s32
-bzng_lms_bitmap_ints(s32 n)
-{
-	return (n / WORDBITS + 1) * (WORDBYTES / 4);
-}
-
-/*
- * Sets the bit of position p in the bitmap whose word *word is being built in
- * *w, first storing that word if p lies in a later one. The words are stored
- * little-endian, so that position p is bit p % 8 of byte p / 8.
- */
-static forceinline void
-bzng_lms_bitmap_mark(u8 *bitmap, machine_word_t *w, u32 *word, u32 p)
-{
-	if (p / WORDBITS != *word) {
-		put_unaligned_leword(*w, &bitmap[*word * WORDBYTES]);
-		*word = p / WORDBITS;
-		*w = 0;
-	}
-	*w |= (machine_word_t)1 << (p % WORDBITS);
-}
-
-/*
- * Marks the m ascending LMS positions lms[0..m) in the bitmap of ints ints
- * (bzng_lms_bitmap_ints), which need only be 4-byte aligned. Four positions
- * that end in the word being built, and so lie in it, are set together; a
- * group that crosses into a later word is marked one by one.
- */
-static void
-bzng_lms_bitmap_store(const s32 *lms, s32 m, s32 *bitmap, s32 ints)
-{
-	/* Positions are not negative: unsigned arithmetic divides by shifts. */
-	const u32 *pos = (const u32 *)lms;
-	u8 *bytes = (u8 *)bitmap;
-	machine_word_t w = 0;
-	u32 word = 0;
-	s32 j = 0;
-
-	memset(bitmap, 0, (size_t)ints * sizeof(bitmap[0]));
-	for (; j + 4 <= m; j += 4) {
-		if (pos[j + 3] / WORDBITS == word) {
-			w |= ((machine_word_t)1 << (pos[j] % WORDBITS)) |
-			     ((machine_word_t)1 << (pos[j + 1] % WORDBITS)) |
-			     ((machine_word_t)1 << (pos[j + 2] % WORDBITS)) |
-			     ((machine_word_t)1 << (pos[j + 3] % WORDBITS));
-			continue;
-		}
-		for (s32 k = j; k < j + 4; k++)
-			bzng_lms_bitmap_mark(bytes, &w, &word, pos[k]);
-	}
-	for (; j < m; j++)
-		bzng_lms_bitmap_mark(bytes, &w, &word, pos[j]);
-	put_unaligned_leword(w, &bytes[word * WORDBYTES]);
-}
-
-/*
- * Writes the positions marked in the bitmap of ints ints, ascending, to out.
- * Each half byte stores its four table entries whatever its count, so out
- * needs room for 4 entries beyond the positions marked.
- */
-static void
-bzng_lms_bitmap_load(const s32 *bitmap, s32 ints, s32 *out)
-{
-	/* The set bits of each half byte, in order, and their count. */
-	static const s32 nibble_bits[16][4] = {
-		{0, 0, 0, 0}, {0, 0, 0, 0}, {1, 0, 0, 0}, {0, 1, 0, 0},
-		{2, 0, 0, 0}, {0, 2, 0, 0}, {1, 2, 0, 0}, {0, 1, 2, 0},
-		{3, 0, 0, 0}, {0, 3, 0, 0}, {1, 3, 0, 0}, {0, 1, 3, 0},
-		{2, 3, 0, 0}, {0, 2, 3, 0}, {1, 2, 3, 0}, {0, 1, 2, 3},
-	};
-	static const u8 nibble_count[16] = {0, 1, 1, 2, 1, 2, 2, 3,
-					    1, 2, 2, 3, 2, 3, 3, 4};
-	const u8 *bytes = (const u8 *)bitmap;
-
-	for (s32 i = 0; i < ints * 4; i++) {
-		u32 lo = bytes[i] & 15, hi = bytes[i] >> 4;
-
-		for (int k = 0; k < 4; k++)
-			out[k] = 8 * i + nibble_bits[lo][k];
-		out += nibble_count[lo];
-		for (int k = 0; k < 4; k++)
-			out[k] = 8 * i + 4 + nibble_bits[hi][k];
-		out += nibble_count[hi];
-	}
-}
-
-/*
  * Largest block whose final induction, once bzng_rec_repetitive has judged
  * it repetitive, is sort_recursion.h's (patch 0006). On x86-64 the register
  * scans gained on MC:Z blocks of up to 64 KiB on every machine measured but
@@ -233,6 +142,11 @@ static int32_t libsais_bwt_aux_ctx(const void *ctx, const uint8_t *T,
 				   uint8_t *U, int32_t *A, int32_t n,
 				   int32_t fs, int32_t *freq, int32_t r,
 				   int32_t *I);
+static int32_t libsais_bwt_cyclic(const uint8_t *T, uint8_t *U, int32_t *A,
+				  int32_t n, int32_t fs, int32_t *freq);
+static int32_t libsais_bwt_cyclic_ctx(const void *ctx, const uint8_t *T,
+				      uint8_t *U, int32_t *A, int32_t n,
+				      int32_t fs, int32_t *freq);
 static void *libsais_unbwt_create_ctx(void);
 static void libsais_unbwt_free_ctx(void *ctx);
 static int32_t libsais_unbwt(const uint8_t *T, uint8_t *U, int32_t *A,
@@ -247,6 +161,11 @@ static int32_t libsais_unbwt_aux_ctx(const void *ctx, const uint8_t *T,
 				     uint8_t *U, int32_t *A, int32_t n,
 				     const int32_t *freq, int32_t r,
 				     const int32_t *I);
+static int32_t libsais_unbwt_cyclic(const uint8_t *T, uint8_t *U, int32_t *A,
+				    int32_t n, const int32_t *freq, int32_t i);
+static int32_t libsais_unbwt_cyclic_ctx(const void *ctx, const uint8_t *T,
+					uint8_t *U, int32_t *A, int32_t n,
+					const int32_t *freq, int32_t i);
 static int32_t libsais_plcp(const uint8_t *T, const int32_t *SA, int32_t *PLCP,
 			    int32_t n);
 static int32_t libsais_plcp_gsa(const uint8_t *T, const int32_t *SA,
@@ -377,27 +296,18 @@ bzng_bwt(const u8 *T, u8 *L, s32 n, s32 q, s32 *freq, s32 *work,
 		.threads = 1,
 	};
 	/*
-	 * libsais's BWT mode with patch 0002: the final induction leaves in
-	 * each row's entry the byte before that row's suffix, stores the row of
-	 * suffix q in row and returns the row of suffix 0.
-	 */
-	s32 *A = work;
-	s32 row = -1;
-	s32 first = libsais_main_ctx(&ctx, T, A, n,
-				     LIBSAIS_FLAGS_BWT | LIBSAIS_FLAGS_BWT_ROW,
-				     q, &row, (s32)fs, freq);
-	if (first < 0 || row < 0)
-		return -2;
-	/* T is a Lyndon word exactly when suffix 0 is the least suffix. */
-	if (first != 0)
-		return -3;
-
-	/*
-	 * Suffix order is rotation order, so row 0, suffix 0's, ends with
-	 * T[n - 1], and every other row's entry already holds its last byte.
+	 * libsais's cyclic BWT mode: the final induction leaves in each row's
+	 * entry the byte before that row's suffix, taking T[n - 1] as the byte
+	 * before suffix 0, and returns the row of suffix q. T is a Lyndon word,
+	 * so suffix order is rotation order and the entries are the cyclic BWT.
 	 * The induction has finished with T, so L may be T.
 	 */
-	L[0] = T[n - 1];
-	libsais_bwt_copy_8u(L + 1, A + 1, n - 1);
+	s32 *A = work;
+	s32 row = libsais_main_ctx(&ctx, T, A, n,
+				   LIBSAIS_FLAGS_BWT | LIBSAIS_FLAGS_CYCLIC, q,
+				   NULL, (s32)fs, freq);
+	if (row < 0)
+		return -2;
+	libsais_bwt_copy_8u(L, A, n);
 	return row;
 }

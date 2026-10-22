@@ -35,7 +35,7 @@ size_t bzng_bwt_work_ints(s32 n);
  *
  * Errors: -1 bad arguments or work array too small, -2 the sorter failed
  * because it would have needed memory beyond work (cannot happen with the
- * advertised work size), -3 T is not a Lyndon word.
+ * advertised work size).
  */
 s32 bzng_bwt(const u8 *T, u8 *L, s32 n, s32 q, s32 *freq, s32 *work,
 	     size_t work_ints);

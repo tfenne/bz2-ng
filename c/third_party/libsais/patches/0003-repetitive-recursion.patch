@@ -1,12 +1,12 @@
 Sorts the reduced string of a repetitive block with bz2-ng's sais-lite
 recursion (lib/sort_recursion.h) instead of libsais's own. Applies after
-0002-bwt-row.patch.
+0001-keep-lms-positions.patch.
 
 After the top level has named the LMS substrings, libsais_main_8u sorts
 the reduced string with libsais_main_32s_entry. When bzng_rec_repetitive
-finds the block repetitive, it calls bzng_rec_sort_main instead, with the
-same reduced string, suffix array and free space; both leave the suffix
-array of the reduced string in SA[0..m) and touch nothing outside
+finds the block repetitive, it calls bzng_rec_sort_main instead, with
+the same reduced string, suffix array and free space; both leave the
+suffix array of the reduced string in SA[0..m) and touch nothing outside
 SA[0..n + fs), so the top level's work after the call is the same. Both
 functions are bz2-ng's, in lib/sort_libsais.c and lib/sort_recursion.h,
 which sort_libsais.c includes before this file: with the patch applied
@@ -19,40 +19,37 @@ hands its own recursion either fs + n - 2m, which with m <= n/2 keeps
 free space less length from falling, or, where it keeps its list of LMS
 positions, at least the recursion's length. It allocates nothing.
 
-bzng_rec_repetitive takes the block as repetitive when its reduced string
-has at most one distinct name per 8 entries and more than 0.42 of its
-first 8,192 entries are LMS positions of that string (the last entry of
-that window counted as L-type). Measured over every
-level-9 block of the MC:Z, XA:Z and quality corpora (16 KiB, 64 KiB and
-whole-file streams) and of Silesia: every MC:Z block's reduced string has
-LMS density 0.44-0.50 and every other block's 0.19-0.41.
+bzng_rec_repetitive takes the block as repetitive when its reduced
+string has at most one distinct name per 8 entries and more than 0.42 of
+its first 8,192 entries are LMS positions of that string (the last entry
+of that window counted as L-type). Over every level-9 block of the MC:Z,
+XA:Z and quality corpora (16 KiB, 64 KiB and whole-file streams) and of
+Silesia, that is exactly the MC:Z blocks. libsais 2.12.0 names the LMS
+substrings of a block with few ties uniquely before the recursion
+(libsais_resolve_nonunique_lms_suffixes_omp); a repetitive block has too
+many ties for that (at least 7 in 8 entries), so its reduced string is
+unaffected.
 
-Measured on the M4 with Apple clang 21, timing both recursions on each
-block's own reduced string, back to back from the same input: the sais-
-lite recursion takes 0.59-0.64 of libsais's time on MC:Z (every block
-0.54-0.86) and 0.75-1.48 elsewhere (1.2-1.5 on XA:Z, quality and most of
-Silesia whole files), which is why only repetitive blocks take it.
-
-Measured end to end at level 9 against an identical-binary control, 5
-rounds in rotating order, MC:Z 16 KiB / 64 KiB / whole: Graviton4 clang 18
-1.03 / 1.03 / 1.04 and gcc 13 1.02 / 1.03 / 1.04; Granite Rapids gcc 13
-1.06 / 1.05 / 1.03 and clang 18 1.04 / even / even; Zen 5 gcc 13 1.02 /
-1.02 / 1.02 and clang 18 0.97 / 0.96 / 0.97; the M4 with Apple clang 21
-1.17 / 1.21 / 1.26. Every XA:Z, quality-string and Silesia cell is even on
-every machine. The loss under clang on Zen 5 is accepted: the two pairings
-docs/spec.md section 3 ranks first both gain.
+Measured with libsais 2.12.0 on the M4 Max with Apple clang 21, the sort
+stage alone (bzng_sort_block on every level-9 block, 5 rounds
+interleaved with an identical build as control), against the series
+without this patch (0006 still taking the repetitive blocks' final
+induction): MC:Z 16 KiB / 64 KiB / whole 1.13 / 1.11 / 1.10, faster in
+every round; every other set within the control's noise. The series
+measured also kept the LMS positions of the blocks without the list as a
+bitmap.
 
 --- a/libsais.c
 +++ b/libsais.c
 @@ -4,6 +4,7 @@
+  * applied.
   *
   * 0001-keep-lms-positions.patch
-  * 0002-bwt-row.patch
 + * 0003-repetitive-recursion.patch
   */
  
  /*--
-@@ -7000,7 +7001,15 @@
+@@ -9609,7 +9610,15 @@
          sa_sint_t names = libsais_renumber_and_gather_lms_suffixes_omp(SA, n, m, fs, threads, thread_state);
          if (names < m)
          {

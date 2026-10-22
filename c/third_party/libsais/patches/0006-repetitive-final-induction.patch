@@ -6,78 +6,55 @@ size that bz2-ng sets per architecture. Applies after
 libsais_main_8u keeps 0003's decision (bzng_rec_repetitive) in a local.
 When it was taken, the block is no longer than BZNG_REC_FINAL_MAX
 (lib/sort_libsais.c: 2^17 bytes on x86-64, any length elsewhere) and the
-BWT_ROW flag is set, it calls bzng_rec_final_bwt in place of
-libsais_induce_final_order_8u_omp, with the same block, entries, bucket
-arrays, suffix and row pointer. That function is sais-lite's computeBWT
-on the block's bytes, with libsais's bucket arrays and the row of suffix
-q noted as 0002 notes it; each scan keeps the current bucket's pointer
-in a register, writing it back only when the bucket changes, clears a
-marked entry with a select rather than a branch, and does not prefetch.
-On a repetitive block consecutive steps mostly write to one bucket, and
-libsais's load and store of that bucket's counter at every step form a
-chain. It leaves every row's entry, the row of suffix 0, the row of
-suffix q and the bucket counters as libsais's final induction leaves
-them. It reads the block and writes only the entries and the bucket
-counters, so the workspace is unchanged and nothing is allocated. Like
-0003, the patched file calls bz2-ng's code, which sort_libsais.c defines
-before it; this patch adds only the call.
+cyclic BWT flag (LIBSAIS_FLAGS_CYCLIC) is set, it calls
+bzng_rec_final_bwt in place of libsais_induce_final_order_8u_omp, with
+the same block, entries, bucket arrays and suffix (origin), and returns
+the row into which that suffix is induced, as libsais's cyclic final
+induction does. bzng_rec_final_bwt is sais-lite's computeBWT on the
+block's bytes, with libsais's bucket arrays and the row of one suffix
+noted; each scan keeps the current bucket's pointer in a register,
+writing it back only when the bucket changes, clears a marked entry with
+a select rather than a branch, and does not prefetch. On a repetitive
+block consecutive steps mostly write to one bucket, and libsais's load
+and store of that bucket's counter at every step form a chain. It leaves
+every row's entry, both rows and the bucket counters as libsais's
+non-cyclic final induction leaves them; the one entry in which the
+cyclic induction differs, the row of suffix 0, which it gives T[n - 1]
+where the non-cyclic one leaves 0, is then stored. It reads the block
+and writes only the entries and the bucket counters, so the workspace is
+unchanged and nothing is allocated. Like 0003, the patched file calls
+bz2-ng's code, which sort_libsais.c defines before it; this patch adds
+only the call.
 
-Measured on the M4 Max, bzng_bwt alone on every block of the MC:Z
-corpus, 5 rounds in rotating order against an identical build as
-control: blocks of 16 KiB, 64 KiB, 640 kB and whole-file streams sort
-1.10-1.11 times as fast with Apple clang 21 and 1.07-1.08 with gcc 16.
-Forced onto every block it is slower elsewhere (XA:Z whole-file blocks
-0.93 with clang, 0.92 with gcc), which is why only repetitive blocks
-take it.
-
-End to end at level 9 against an identical-binary control, 5 rounds,
-MC:Z 16 KiB / 64 KiB / whole, with the register path at every size (in a
-form of the scans that encoded the entries as libsais does and that
-sorts as fast as this one on the M4 with both compilers): Graviton4
-1.036 / 1.033 / 1.032 with clang 18 and 1.029 / 1.026 / 1.018 with gcc
-13; Zen 5 1.011 / 1.023 / 1.018 with clang 18 and 1.009 / 1.026 / 1.012
-with gcc 13; Granite Rapids 1.024 / 1.030 / 0.993 with clang 18 and
-1.014 / 1.012 / 0.970 (slower in every round) with gcc 13. So on x86-64
-the register path is kept to blocks of up to 2^17 bytes, which covers
-every block of a 64 KiB stream (RLE1 lengthens a block by at most a
-quarter); between 64 KiB streams and full 900 kB blocks there is no
-x86-64 measurement, and above the limit libsais's final induction runs
-as before. This form with that limit, every build with
--falign-functions=64, MC:Z 16 KiB / 64 KiB / whole: Graviton4 1.045 /
-1.040 / 1.038 with clang 18 and 1.018 / 1.016 / even with gcc 13; Zen 5
-1.029 / 1.023 / even with clang 18 and 1.021 / 1.015 / even with gcc 13;
-Granite Rapids 1.030 / 1.027 / even with clang 18 and even in all three
-with gcc 13; every other cell even, none slower. On the M4 Max, MC:Z
-16 KiB / 64 KiB / 640 kB / whole:
-1.09-1.11 / 1.09-1.10 / 1.10-1.11 / 1.10 with Apple clang 21 (three
-screens) and 1.07 / 1.07 / 1.06-1.07 / 1.06-1.07 with gcc 16 (two),
-faster in every round but one (gcc, 16 KiB); XA:Z whole even. These are
-short screens of 5 rounds in one hold each against an identical-binary
-control, and in each an indexing daemon went over machine-lock's limit,
-so they give direction only; clean 5-round screens of the form that
-encoded the entries as libsais does gave 1.10 / 1.10 / 1.11 / 1.10 with
-clang and 1.07 / 1.06 / 1.07 / 1.06 with gcc, and this form was within
-0.015 of that one in every short screen.
+Measured with libsais 2.12.0 on the M4 Max with Apple clang 21, the sort
+stage alone (bzng_sort_block on every level-9 block of the corpora, 5
+rounds interleaved with an identical build as control), the series with
+this patch against the same series without it: MC:Z 16 KiB / 64 KiB /
+whole 1.12 / 1.13 / 1.10, faster in every round; every other set within
+the control's noise. The series measured also kept the LMS positions of
+the blocks without the list as a bitmap. The x86-64 limit rests on the
+Granite Rapids measurements made with libsais 1a696e6 (docs/spec.md
+section 4.3).
 
 --- a/libsais.c
 +++ b/libsais.c
-@@ -7,6 +7,7 @@
+@@ -6,6 +6,7 @@
+  * 0001-keep-lms-positions.patch
   * 0003-repetitive-recursion.patch
-  * 0004-keep-lms-bitmap.patch
   * 0005-recursion-prefetch.patch
 + * 0006-repetitive-final-induction.patch
   */
  
  /*--
-@@ -6988,6 +6989,7 @@
- 
-     sa_sint_t m = libsais_count_and_gather_lms_suffixes_8u_omp(T, SA, n, buckets, threads, thread_state);
+@@ -9594,6 +9595,7 @@
+     sa_sint_t lms_threads = threads;
+     sa_sint_t m = libsais_count_and_gather_lms_suffixes_8u_omp(T, SA, n, buckets, &lms_threads, thread_state);
      sa_sint_t k = libsais_initialize_buckets_start_and_end_8u(buckets, freq);
 +    sa_sint_t repetitive = 0;
  
      if ((flags & LIBSAIS_FLAGS_GSA) && (buckets[0] != 0 || buckets[2] != 0 || buckets[3] != 1))
      {
-@@ -7037,7 +7039,8 @@
+@@ -9633,7 +9635,8 @@
               * (lib/sort_recursion.h, included before this file) in place
               * of libsais's own, with the same arguments and result.
               */
@@ -87,21 +64,24 @@ clang and 1.07 / 1.06 / 1.07 / 1.06 with gcc, and this form was within
                  ? bzng_rec_sort_main(SA + n + fs - m, SA, fs + n - 2 * m, m, names)
                  : libsais_main_32s_entry(SA + n + fs - m, SA, m, names, fs + n - 2 * m, threads, thread_state);
              if (rc != 0)
-@@ -7066,6 +7069,17 @@
+@@ -9657,6 +9660,20 @@
      else
      {
          memset(SA, 0, (size_t)n * sizeof(sa_sint_t));
 +    }
 +
 +    /*
-+     * The final induction of a repetitive block in BWT mode with the row,
-+     * up to bz2-ng's size limit, is bz2-ng's (lib/sort_recursion.h and
++     * The final induction of a repetitive block in cyclic BWT mode, up to
++     * bz2-ng's size limit, is bz2-ng's (lib/sort_recursion.h and
 +     * lib/sort_libsais.c, included before this file), with the same
-+     * arguments and result as the one below.
++     * arguments and result as the one below: it leaves 0 in the row of
++     * suffix 0, which the cyclic BWT gives the last symbol of T.
 +     */
-+    if (repetitive && n <= BZNG_REC_FINAL_MAX && (flags & LIBSAIS_FLAGS_BWT_ROW))
++    if (repetitive && n <= BZNG_REC_FINAL_MAX && (flags & LIBSAIS_FLAGS_CYCLIC))
 +    {
-+        return bzng_rec_final_bwt(T, SA, n, r, I, &buckets[6 * ALPHABET_SIZE], &buckets[7 * ALPHABET_SIZE]);
++        sa_sint_t row = -1;
++        SA[bzng_rec_final_bwt(T, SA, n, r, &row, &buckets[6 * ALPHABET_SIZE], &buckets[7 * ALPHABET_SIZE])] = T[n - 1];
++        return row;
      }
  
      return libsais_induce_final_order_8u_omp(T, SA, n, k, flags, r, I, buckets, threads, thread_state);
